@@ -83,6 +83,8 @@ pub fn run() {
 
             info!("FFmpeg source: {}", ffmpeg_resolver.source_description());
 
+            let is_wayland = platform.is_wayland();
+
             // Register app state
             app.manage(AppState {
                 ffmpeg: ffmpeg_resolver,
@@ -90,8 +92,14 @@ pub fn run() {
                 platform,
             });
 
-            // Setup system tray
-            setup_tray(app)?;
+            // Setup system tray — skip on Wayland (known GDK protocol errors)
+            if !is_wayland {
+                if let Err(e) = setup_tray(app) {
+                    warn!("Failed to setup system tray: {e}");
+                }
+            } else {
+                info!("Skipping system tray on Wayland (not yet supported)");
+            }
 
             // Register global shortcuts on startup
             let handle = app.handle().clone();
