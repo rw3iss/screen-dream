@@ -786,8 +786,8 @@ impl CaptureBackend for KwinCaptureBackend {
                     // For maximized windows (x == stream_x), no shadow is rendered
                     // so no offset is needed.
                     let is_maximized = x == stream_x && width as i32 >= (fw as i32 - 2);
-                    let shadow_offset_x: i32 = if is_maximized { 0 } else { 64 };
-                    let shadow_offset_y: i32 = if is_maximized { 0 } else { 51 };
+                    let shadow_offset_x: i32 = if is_maximized { 0 } else { 54 };
+                    let shadow_offset_y: i32 = if is_maximized { 0 } else { 46 };
 
                     let local_x = x - stream_x - shadow_offset_x;
                     let local_y = y - stream_y - shadow_offset_y;
