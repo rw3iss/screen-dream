@@ -75,23 +75,25 @@ pub fn detect_compositor() -> Compositor {
 // ---------------------------------------------------------------------------
 
 /// CaptureBackend implementation using KWin D-Bus APIs for window enumeration
-/// and a persistent PipeWire ScreenCast stream for frame capture.
+/// and Spectacle D-Bus for native-resolution frame capture.
 ///
 /// Window enumeration: KWin scripting API (`org.kde.kwin.Scripting`) — sees all
 /// native Wayland windows, not just XWayland.
-/// Frame capture: PipeWire ScreenCast stream provides hardware-accelerated,
-/// continuous frames. Grabbed instantly from a cached buffer.
+/// Frame capture: Spectacle D-Bus provides native 4K resolution screenshots
+/// without portal popups. PipeWire is kept for live preview thumbnails.
 pub struct KwinCaptureBackend {
     platform: PlatformInfo,
     runtime: tokio::runtime::Runtime,
-    /// xcap backend used for screen/region capture (portal-based).
+    /// xcap backend used for monitor enumeration.
     xcap_fallback: super::XcapCaptureBackend,
     /// Maps synthetic numeric window IDs to KWin UUID strings.
     uuid_map: Mutex<HashMap<u32, String>>,
     /// Maps synthetic numeric window IDs to geometry (x, y, w, h).
     geometry_map: Mutex<HashMap<u32, (i32, i32, u32, u32)>>,
-    /// Persistent PipeWire capture stream (lazily initialised).
+    /// Persistent PipeWire capture stream (lazily initialised) — used for thumbnails/previews.
     pw_capture: Mutex<Option<super::pipewire_capture::PipeWireCapture>>,
+    /// Spectacle D-Bus backend for native-resolution screenshot capture.
+    spectacle: super::spectacle_backend::SpectacleCapture,
 }
 
 impl KwinCaptureBackend {
@@ -103,6 +105,7 @@ impl KwinCaptureBackend {
         let xcap_fallback = super::XcapCaptureBackend::new(platform.clone());
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| AppError::Capture(format!("Failed to create tokio runtime: {e}")))?;
+        let spectacle = super::spectacle_backend::SpectacleCapture::new()?;
         Ok(KwinCaptureBackend {
             platform,
             runtime,
@@ -110,6 +113,7 @@ impl KwinCaptureBackend {
             uuid_map: Mutex::new(HashMap::new()),
             geometry_map: Mutex::new(HashMap::new()),
             pw_capture: Mutex::new(None),
+            spectacle,
         })
     }
 
@@ -742,94 +746,84 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
-        // Use the portal Screenshot API for full native-resolution captures.
-        // The portal captures ALL monitors at physical resolution (logical * scale).
+        // Use Spectacle D-Bus for native-resolution captures.
+        // Spectacle captures at full 4K native resolution without portal popups.
         // PipeWire is kept for thumbnails/previews (lower resolution, continuous stream).
 
-        // Detect the scale factor from xcap monitors.
-        let scale = self.detect_scale_factor();
-
         match source {
-            CaptureSource::Screen(s) => {
-                debug!("Capturing screen via portal Screenshot (native resolution)");
+            CaptureSource::Screen(_s) => {
+                debug!("Capturing current screen via Spectacle D-Bus (native resolution)");
 
-                // Find the target monitor to get its logical position and size.
-                let monitors = Monitor::all().map_err(|e| {
-                    AppError::Capture(format!("Failed to enumerate monitors: {e}"))
-                })?;
+                let path = self.spectacle.current_screen()?;
+                let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&path)?;
 
-                let monitor = monitors
-                    .iter()
-                    .find(|m| m.id().ok() == Some(s.monitor_id))
-                    .ok_or_else(|| {
-                        AppError::Capture(format!("Monitor with ID {} not found", s.monitor_id))
-                    })?;
+                // Clean up the screenshot file (best effort).
+                if let Err(e) = std::fs::remove_file(&path) {
+                    warn!("Failed to remove Spectacle screenshot file '{}': {e}", path.display());
+                }
 
-                let logical_x = monitor.x().map_err(|e| AppError::Capture(format!("monitor.x(): {e}")))?;
-                let logical_y = monitor.y().map_err(|e| AppError::Capture(format!("monitor.y(): {e}")))?;
-                let logical_w = monitor.width().map_err(|e| AppError::Capture(format!("monitor.width(): {e}")))?;
-                let logical_h = monitor.height().map_err(|e| AppError::Capture(format!("monitor.height(): {e}")))?;
-
-                info!(
-                    "Screen capture: monitor {} at logical ({},{} {}x{}), scale={}",
-                    s.monitor_id, logical_x, logical_y, logical_w, logical_h, scale
-                );
-
-                super::portal_screenshot::portal_screenshot_cropped(
-                    &self.runtime,
-                    logical_x, logical_y,
-                    logical_w, logical_h,
-                    scale,
-                )
+                Ok(frame)
             }
             CaptureSource::Window(w) => {
-                let geom_map = self.geometry_map.lock().map_err(|e| {
-                    AppError::Capture(format!("Geometry map lock poisoned: {e}"))
-                })?;
-                if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
-                    if width == 0 || height == 0 {
-                        return Err(AppError::Capture(
-                            "Cannot capture this window — it may be minimized or hidden.".to_string()
-                        ));
-                    }
-
-                    // The geometry (x, y, width, height) is already in logical coordinates
-                    // with titlebar included (y = clientGeometry.y - titlebar, h = clientGeometry.h + titlebar).
-                    // The portal screenshot covers ALL monitors, so window coordinates in the
-                    // full image are simply logical_position * scale — no monitor offset subtraction needed.
-
-                    info!(
-                        "Window capture: logical ({},{} {}x{}), scale={}",
-                        x, y, width, height, scale
-                    );
-
-                    super::portal_screenshot::portal_screenshot_cropped(
-                        &self.runtime,
-                        x, y,
-                        width, height,
-                        scale,
-                    )
+                // Resolve the KWin UUID for the target window.
+                let uuid = if let Some(ref uuid) = w.uuid {
+                    uuid.clone()
                 } else {
-                    Err(AppError::Capture(format!(
-                        "Window ID {} not found in geometry map. Try refreshing sources first.",
-                        w.window_id
-                    )))
+                    let map = self.uuid_map.lock().map_err(|e| {
+                        AppError::Capture(format!("UUID map lock poisoned: {e}"))
+                    })?;
+                    map.get(&w.window_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            AppError::Capture(format!(
+                                "No KWin UUID found for window ID {}. Call enumerate_sources first.",
+                                w.window_id
+                            ))
+                        })?
+                };
+
+                debug!("Capturing window {uuid} via Spectacle D-Bus (native resolution)");
+
+                let path = self.spectacle.capture_window(&uuid)?;
+                let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&path)?;
+
+                // Clean up the screenshot file (best effort).
+                if let Err(e) = std::fs::remove_file(&path) {
+                    warn!("Failed to remove Spectacle screenshot file '{}': {e}", path.display());
                 }
+
+                Ok(frame)
             }
             CaptureSource::Region(r) => {
-                // Region coordinates are in logical space, same as window.
-                // The portal screenshot covers everything, so just scale and crop.
+                // Region coordinates are in logical space.
+                // Spectacle captures at native resolution (physical pixels), so we need
+                // to scale logical coordinates by the display scale factor before cropping.
+                let scale = self.detect_scale_factor();
+
                 info!(
-                    "Region capture: logical ({},{} {}x{}), scale={}",
+                    "Region capture via Spectacle: logical ({},{} {}x{}), scale={}",
                     r.x, r.y, r.width, r.height, scale
                 );
 
-                super::portal_screenshot::portal_screenshot_cropped(
-                    &self.runtime,
-                    r.x, r.y,
-                    r.width, r.height,
-                    scale,
-                )
+                // Capture full screen at native resolution.
+                let path = self.spectacle.full_screen()?;
+
+                // Scale logical coordinates to physical pixels for cropping.
+                let phys_x = (r.x as f64 * scale).round() as i32;
+                let phys_y = (r.y as f64 * scale).round() as i32;
+                let phys_w = (r.width as f64 * scale).round() as u32;
+                let phys_h = (r.height as f64 * scale).round() as u32;
+
+                let frame = super::portal_screenshot::load_png_and_crop(
+                    &path, phys_x, phys_y, phys_w, phys_h,
+                )?;
+
+                // Clean up the screenshot file (best effort).
+                if let Err(e) = std::fs::remove_file(&path) {
+                    warn!("Failed to remove Spectacle screenshot file '{}': {e}", path.display());
+                }
+
+                Ok(frame)
             }
         }
     }

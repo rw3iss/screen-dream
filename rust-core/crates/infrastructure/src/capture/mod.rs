@@ -5,6 +5,7 @@ pub mod portal_recorder;
 pub mod portal_screenshot;
 pub mod recording_pipeline;
 pub mod screenshot;
+pub mod spectacle_backend;
 pub mod xcap_backend;
 
 pub use audio_capture::*;
