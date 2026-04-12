@@ -13,10 +13,12 @@ pub mod recording;
 use std::ffi::c_char;
 use std::sync::{Arc, OnceLock};
 
+use domain::capture::CaptureBackend;
 use domain::ffmpeg::FfmpegProvider;
 use domain::platform::PlatformInfo;
 use domain::settings::SettingsRepository;
-use infrastructure::capture::XcapCaptureBackend;
+use infrastructure::capture::{KwinCaptureBackend, XcapCaptureBackend};
+use infrastructure::capture::kwin_backend::{detect_compositor, Compositor};
 use infrastructure::ffmpeg::FfmpegResolver;
 use infrastructure::settings::JsonSettingsRepository;
 
@@ -34,7 +36,7 @@ use types::{from_c_str, SDError};
 pub struct CoreState {
     pub ffmpeg: Arc<dyn FfmpegProvider>,
     pub settings: Arc<dyn SettingsRepository>,
-    pub capture: Arc<XcapCaptureBackend>,
+    pub capture: Arc<dyn CaptureBackend>,
     pub platform: PlatformInfo,
 }
 
@@ -103,8 +105,32 @@ pub unsafe extern "C" fn sd_init(
     let ffmpeg: Arc<dyn FfmpegProvider> =
         Arc::new(FfmpegResolver::new(None, None));
 
-    let capture: Arc<XcapCaptureBackend> =
-        Arc::new(XcapCaptureBackend::new(platform.clone()));
+    // Smart backend selection: use KWin D-Bus backend on KDE Wayland,
+    // fall back to xcap for X11 or non-KDE compositors.
+    let capture: Arc<dyn CaptureBackend> = if platform.is_wayland() {
+        let compositor = detect_compositor();
+        tracing::info!("Detected compositor: {:?}", compositor);
+        if compositor == Compositor::KWin {
+            match KwinCaptureBackend::new(platform.clone()) {
+                Ok(backend) => {
+                    tracing::info!("Using KWin D-Bus capture backend");
+                    Arc::new(backend)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "KWin backend initialization failed, falling back to xcap: {e}"
+                    );
+                    Arc::new(XcapCaptureBackend::new(platform.clone()))
+                }
+            }
+        } else {
+            tracing::info!("Non-KDE Wayland compositor, using xcap capture backend");
+            Arc::new(XcapCaptureBackend::new(platform.clone()))
+        }
+    } else {
+        tracing::info!("Using xcap capture backend (X11/non-Wayland)");
+        Arc::new(XcapCaptureBackend::new(platform.clone()))
+    };
 
     let state = CoreState {
         ffmpeg,

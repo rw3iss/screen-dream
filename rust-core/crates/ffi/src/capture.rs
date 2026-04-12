@@ -3,8 +3,6 @@
 use std::ffi::c_char;
 use std::ptr;
 
-use domain::capture::CaptureBackend;
-
 use crate::core;
 use crate::types::{
     from_c_str, to_c_string, SDAvailableSources, SDCaptureSource, SDError, SDFrame,

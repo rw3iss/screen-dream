@@ -46,6 +46,7 @@ struct WindowInfo {
     uint32_t height;
     bool isMinimized;
     bool isFocused;
+    QString uuid;  // KWin window UUID (empty on X11)
 };
 
 struct AvailableSources {

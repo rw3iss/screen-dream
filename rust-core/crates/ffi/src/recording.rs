@@ -9,7 +9,8 @@ use std::time::Instant;
 use domain::capture::RecordingConfig;
 use domain::error::AppError;
 
-use infrastructure::capture::{AudioCapture, RecordingPipeline};
+use infrastructure::capture::{AudioCapture, PortalRecorder, RecordingPipeline};
+use infrastructure::capture::portal_recorder::is_portal_available_sync;
 
 use crate::core;
 use crate::types::{
@@ -21,10 +22,21 @@ use crate::types::{
 // Internal fields for SDRecordingHandle
 // ---------------------------------------------------------------------------
 
+/// Dual recorder support: xcap-based pipeline or portal-based recorder.
+enum RecorderInner {
+    Xcap {
+        pipeline: RecordingPipeline,
+        audio: Option<AudioCapture>,
+    },
+    Portal {
+        recorder: PortalRecorder,
+        audio: Option<AudioCapture>,
+    },
+}
+
 /// The real contents of an SDRecordingHandle, hidden from FFI callers.
 struct RecordingHandleInner {
-    pipeline: RecordingPipeline,
-    audio: Option<AudioCapture>,
+    recorder: RecorderInner,
     start_time: Instant,
     frames_at_stop: u64,
     video_path: PathBuf,
@@ -126,22 +138,10 @@ pub unsafe extern "C" fn sd_start_recording(
         }
     };
 
-    // Start the video recording pipeline.
-    let pipeline = match RecordingPipeline::start(
-        ffmpeg_path,
-        state.capture.clone(),
-        recording_config.clone(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            if !error.is_null() {
-                unsafe { *error = SDError::from_app_error(e) };
-            }
-            return ptr::null_mut();
-        }
-    };
+    // Decide whether to use the Portal recorder (Wayland) or xcap pipeline.
+    let use_portal = state.platform.is_wayland() && is_portal_available_sync();
 
-    // Optionally start audio capture.
+    // Optionally start audio capture (shared by both paths).
     let (audio, audio_path) = if cfg.capture_microphone {
         let audio_out = {
             let video_path = PathBuf::from(&output_path_str);
@@ -171,9 +171,53 @@ pub unsafe extern "C" fn sd_start_recording(
         (None, None)
     };
 
+    let recorder = if use_portal {
+        // Load restore token from config dir (if available).
+        let restore_token = load_portal_restore_token();
+        tracing::info!(
+            "Starting portal-based recording (restore_token={})",
+            restore_token.is_some()
+        );
+
+        match PortalRecorder::start(
+            ffmpeg_path,
+            recording_config.clone(),
+            restore_token,
+        ) {
+            Ok(r) => RecorderInner::Portal {
+                recorder: r,
+                audio,
+            },
+            Err(e) => {
+                if !error.is_null() {
+                    unsafe { *error = SDError::from_app_error(e) };
+                }
+                return ptr::null_mut();
+            }
+        }
+    } else {
+        // Start the xcap-based video recording pipeline.
+        tracing::info!("Starting xcap-based recording pipeline");
+        match RecordingPipeline::start(
+            ffmpeg_path,
+            state.capture.clone(),
+            recording_config.clone(),
+        ) {
+            Ok(p) => RecorderInner::Xcap {
+                pipeline: p,
+                audio,
+            },
+            Err(e) => {
+                if !error.is_null() {
+                    unsafe { *error = SDError::from_app_error(e) };
+                }
+                return ptr::null_mut();
+            }
+        }
+    };
+
     let inner = RecordingHandleInner {
-        pipeline,
-        audio,
+        recorder,
         start_time: Instant::now(),
         frames_at_stop: 0,
         video_path: PathBuf::from(&output_path_str),
@@ -231,31 +275,61 @@ pub unsafe extern "C" fn sd_stop_recording(
     let mut inner = unsafe { Box::from_raw(handle_ref.inner as *mut RecordingHandleInner) };
     handle_ref.inner = ptr::null_mut();
 
-    // Stop the video pipeline.
-    let pipeline_result = match inner.pipeline.stop() {
-        Ok(r) => r,
-        Err(e) => {
-            if !error.is_null() {
-                unsafe { *error = SDError::from_app_error(e) };
-            }
-            return false;
-        }
-    };
-
-    inner.frames_at_stop = pipeline_result.frames_captured;
-
-    // Stop audio if present.
-    let audio_wav_path = if let Some(ref mut audio) = inner.audio {
-        match audio.stop() {
-            Ok(p) => Some(p),
-            Err(e) => {
-                tracing::warn!("Failed to stop audio capture: {e}");
+    // Stop the recorder and extract audio handle.
+    let (frames_captured, audio_wav_path) = match &mut inner.recorder {
+        RecorderInner::Xcap { pipeline, audio } => {
+            let pipeline_result = match pipeline.stop() {
+                Ok(r) => r,
+                Err(e) => {
+                    if !error.is_null() {
+                        unsafe { *error = SDError::from_app_error(e) };
+                    }
+                    return false;
+                }
+            };
+            let wav = if let Some(ref mut ac) = audio {
+                match ac.stop() {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!("Failed to stop audio capture: {e}");
+                        None
+                    }
+                }
+            } else {
                 None
-            }
+            };
+            (pipeline_result.frames_captured, wav)
         }
-    } else {
-        None
+        RecorderInner::Portal { recorder, audio } => {
+            let (pipeline_result, restore_token) = match recorder.stop() {
+                Ok(r) => r,
+                Err(e) => {
+                    if !error.is_null() {
+                        unsafe { *error = SDError::from_app_error(e) };
+                    }
+                    return false;
+                }
+            };
+            // Save the restore token for future sessions.
+            if let Some(token) = restore_token {
+                save_portal_restore_token(&token);
+            }
+            let wav = if let Some(ref mut ac) = audio {
+                match ac.stop() {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!("Failed to stop audio capture: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            (pipeline_result.frames_captured, wav)
+        }
     };
+
+    inner.frames_at_stop = frames_captured;
 
     // If we have both video and audio, mux them together with FFmpeg.
     let final_path = if let Some(wav_path) = audio_wav_path {
@@ -371,7 +445,10 @@ pub unsafe extern "C" fn sd_pause_recording(
     }
 
     let inner = unsafe { &*(handle_ref.inner as *const RecordingHandleInner) };
-    inner.pipeline.pause();
+    match &inner.recorder {
+        RecorderInner::Xcap { pipeline, .. } => pipeline.pause(),
+        RecorderInner::Portal { recorder, .. } => recorder.pause(),
+    }
     true
 }
 
@@ -410,7 +487,10 @@ pub unsafe extern "C" fn sd_resume_recording(
     }
 
     let inner = unsafe { &*(handle_ref.inner as *const RecordingHandleInner) };
-    inner.pipeline.resume();
+    match &inner.recorder {
+        RecorderInner::Xcap { pipeline, .. } => pipeline.resume(),
+        RecorderInner::Portal { recorder, .. } => recorder.resume(),
+    }
     true
 }
 
@@ -445,12 +525,25 @@ pub unsafe extern "C" fn sd_get_recording_status(
     let inner = unsafe { &*(handle_ref.inner as *const RecordingHandleInner) };
     let elapsed = inner.start_time.elapsed().as_secs_f64();
 
-    let state = if !inner.pipeline.is_running() {
-        5 // Completed
-    } else if inner.pipeline.is_paused() {
-        3 // Paused
-    } else {
-        2 // Recording
+    let state = match &inner.recorder {
+        RecorderInner::Xcap { pipeline, .. } => {
+            if !pipeline.is_running() {
+                5 // Completed
+            } else if pipeline.is_paused() {
+                3 // Paused
+            } else {
+                2 // Recording
+            }
+        }
+        RecorderInner::Portal { recorder, .. } => {
+            if !recorder.is_running() {
+                5 // Completed
+            } else if recorder.is_paused() {
+                3 // Paused
+            } else {
+                2 // Recording
+            }
+        }
     };
 
     SDRecordingStatus {
@@ -475,12 +568,24 @@ pub unsafe extern "C" fn sd_free_recording_handle(handle: *mut SDRecordingHandle
     let h = unsafe { Box::from_raw(handle) };
     if !h.inner.is_null() {
         let mut inner = unsafe { Box::from_raw(h.inner as *mut RecordingHandleInner) };
-        // Stop the pipeline if still running.
-        if inner.pipeline.is_running() {
-            let _ = inner.pipeline.stop();
-        }
-        if let Some(ref mut audio) = inner.audio {
-            let _ = audio.stop();
+        // Stop the recorder if still running.
+        match &mut inner.recorder {
+            RecorderInner::Xcap { pipeline, audio } => {
+                if pipeline.is_running() {
+                    let _ = pipeline.stop();
+                }
+                if let Some(ref mut ac) = audio {
+                    let _ = ac.stop();
+                }
+            }
+            RecorderInner::Portal { recorder, audio } => {
+                if recorder.is_running() {
+                    let _ = recorder.stop();
+                }
+                if let Some(ref mut ac) = audio {
+                    let _ = ac.stop();
+                }
+            }
         }
     }
 }
@@ -520,5 +625,38 @@ pub unsafe extern "C" fn sd_list_audio_devices(
             }
             ptr::null_mut()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Portal restore token persistence
+// ---------------------------------------------------------------------------
+
+/// Path for storing the portal restore token.
+fn portal_token_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("com.screendream.app").join("portal_tokens.json"))
+}
+
+/// Load a saved portal restore token from disk.
+fn load_portal_restore_token() -> Option<String> {
+    let path = portal_token_path()?;
+    let data = std::fs::read_to_string(&path).ok()?;
+    let obj: serde_json::Value = serde_json::from_str(&data).ok()?;
+    obj.get("restore_token")?.as_str().map(|s| s.to_string())
+}
+
+/// Save a portal restore token to disk for future sessions.
+fn save_portal_restore_token(token: &str) {
+    let Some(path) = portal_token_path() else {
+        tracing::warn!("Cannot determine config dir for portal token");
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let obj = serde_json::json!({ "restore_token": token });
+    match std::fs::write(&path, serde_json::to_string_pretty(&obj).unwrap_or_default()) {
+        Ok(_) => tracing::debug!("Saved portal restore token to {}", path.display()),
+        Err(e) => tracing::warn!("Failed to save portal restore token: {e}"),
     }
 }

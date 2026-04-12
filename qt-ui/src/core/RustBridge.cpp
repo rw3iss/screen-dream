@@ -108,6 +108,7 @@ AvailableSources RustBridge::enumerateSources() {
         wi.height      = w.height;
         wi.isMinimized = w.is_minimized;
         wi.isFocused   = w.is_focused;
+        wi.uuid        = fromCStr(w.uuid);
         result.windows.append(wi);
     }
 

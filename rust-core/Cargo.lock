@@ -990,6 +990,7 @@ name = "ffi"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
+ "dirs",
  "domain",
  "infrastructure",
  "serde_json",

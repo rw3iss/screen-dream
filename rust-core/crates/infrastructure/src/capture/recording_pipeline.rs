@@ -11,8 +11,6 @@ use domain::error::{AppError, AppResult};
 use domain::ffmpeg::FfmpegCommand;
 use tracing::{debug, error, info, warn};
 
-use crate::capture::XcapCaptureBackend;
-
 /// A recording pipeline that captures frames in a loop and pipes them to FFmpeg.
 ///
 /// Uses a dedicated OS thread (not tokio) since frame capture via xcap is
@@ -38,7 +36,7 @@ impl RecordingPipeline {
     /// Spawns an OS thread that captures frames and pipes raw RGBA to FFmpeg.
     pub fn start(
         ffmpeg_path: PathBuf,
-        backend: Arc<XcapCaptureBackend>,
+        backend: Arc<dyn CaptureBackend>,
         config: RecordingConfig,
     ) -> AppResult<Self> {
         let output_path = PathBuf::from(&config.output_path);
@@ -119,7 +117,7 @@ impl RecordingPipeline {
 /// FFmpeg's stdin via a standard process pipe.
 fn run_capture_loop(
     ffmpeg_path: PathBuf,
-    backend: Arc<XcapCaptureBackend>,
+    backend: Arc<dyn CaptureBackend>,
     config: RecordingConfig,
     running: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
