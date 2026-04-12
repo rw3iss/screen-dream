@@ -29,7 +29,11 @@ impl FfmpegProcess {
     /// stdin is piped (for feeding raw frames). stderr is captured for progress.
     pub fn spawn(ffmpeg_path: &PathBuf, command: FfmpegCommand) -> AppResult<Self> {
         let args = command.build();
-        debug!("Spawning FFmpeg: {} {}", ffmpeg_path.display(), args.join(" "));
+        debug!(
+            "Spawning FFmpeg: {} {}",
+            ffmpeg_path.display(),
+            args.join(" ")
+        );
 
         let child = Command::new(ffmpeg_path)
             .args(&args)
@@ -83,9 +87,10 @@ impl FfmpegProcess {
 
     /// Wait for the process to finish and return exit code.
     pub async fn wait(&mut self) -> AppResult<i32> {
-        let status = self.child.wait().await.map_err(|e| {
-            AppError::FfmpegExecution(format!("Failed to wait for FFmpeg: {e}"))
-        })?;
+        let status =
+            self.child.wait().await.map_err(|e| {
+                AppError::FfmpegExecution(format!("Failed to wait for FFmpeg: {e}"))
+            })?;
 
         let code = status.code().unwrap_or(-1);
         if code != 0 {

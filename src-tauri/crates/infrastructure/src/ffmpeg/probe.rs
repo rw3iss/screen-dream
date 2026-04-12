@@ -93,9 +93,7 @@ fn detect_audio_encoders(ffmpeg_path: &Path) -> AppResult<Vec<AudioCodec>> {
     }
 
     // AAC is built-in to most FFmpeg builds (not just libfdk_aac)
-    if !codecs.iter().any(|c| matches!(c, AudioCodec::Aac))
-        && stdout.contains(" aac ")
-    {
+    if !codecs.iter().any(|c| matches!(c, AudioCodec::Aac)) && stdout.contains(" aac ") {
         codecs.push(AudioCodec::Aac);
     }
 

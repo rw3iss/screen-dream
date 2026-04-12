@@ -1,5 +1,5 @@
-use crate::error::AppResult;
 use super::model::AppSettings;
+use crate::error::AppResult;
 
 /// Persistence abstraction for application settings.
 /// The infrastructure layer provides the concrete implementation

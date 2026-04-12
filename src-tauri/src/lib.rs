@@ -11,7 +11,37 @@ use domain::settings::SettingsRepository;
 use infrastructure::ffmpeg::FfmpegResolver;
 use infrastructure::settings::JsonSettingsRepository;
 use state::AppState;
-use tracing::info;
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager,
+};
+use tracing::{info, warn};
+
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    TrayIconBuilder::new()
+        .menu(&menu)
+        .tooltip(domain::app_config::APP_NAME)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -60,6 +90,22 @@ pub fn run() {
                 platform,
             });
 
+            // Setup system tray
+            setup_tray(app)?;
+
+            // Register global shortcuts on startup
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Small delay to ensure the app is fully initialized
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if let Err(e) = commands::shortcuts::register_shortcuts(
+                    handle.clone(),
+                    handle.state(),
+                ) {
+                    warn!("Failed to register shortcuts on startup: {e:?}");
+                }
+            });
+
             Ok(())
         })
         // IPC command handlers
@@ -69,6 +115,7 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::reset_settings,
             commands::ffmpeg::get_ffmpeg_status,
+            commands::shortcuts::register_shortcuts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

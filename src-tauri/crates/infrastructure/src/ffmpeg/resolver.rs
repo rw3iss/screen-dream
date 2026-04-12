@@ -76,9 +76,8 @@ impl FfmpegResolver {
 
         // 3. Try system PATH
         if let Ok(ffmpeg) = which::which("ffmpeg") {
-            let ffprobe = which::which("ffprobe").unwrap_or_else(|_| {
-                ffmpeg.parent().unwrap_or(Path::new(".")).join("ffprobe")
-            });
+            let ffprobe = which::which("ffprobe")
+                .unwrap_or_else(|_| ffmpeg.parent().unwrap_or(Path::new(".")).join("ffprobe"));
             info!("Using system FFmpeg at {}", ffmpeg.display());
             return Ok(ResolvedFfmpeg {
                 ffmpeg,
@@ -88,8 +87,7 @@ impl FfmpegResolver {
         }
 
         Err(AppError::FfmpegNotFound(
-            "FFmpeg not found. Install it or configure a custom path in settings."
-                .to_string(),
+            "FFmpeg not found. Install it or configure a custom path in settings.".to_string(),
         ))
     }
 }

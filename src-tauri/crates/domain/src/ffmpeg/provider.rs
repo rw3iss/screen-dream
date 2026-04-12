@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::error::AppResult;
 use super::codec::FfmpegCapabilities;
+use crate::error::AppResult;
 
 /// Abstraction over how we find and describe the FFmpeg binary.
 /// Implemented by infrastructure layer (bundled sidecar, system PATH, etc.).

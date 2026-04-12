@@ -64,9 +64,8 @@ impl SettingsRepository for JsonSettingsRepository {
             })?;
         }
 
-        let json = serde_json::to_string_pretty(settings).map_err(|e| {
-            AppError::Settings(format!("Failed to serialize settings: {e}"))
-        })?;
+        let json = serde_json::to_string_pretty(settings)
+            .map_err(|e| AppError::Settings(format!("Failed to serialize settings: {e}")))?;
 
         std::fs::write(&self.path, json).map_err(|e| {
             AppError::Settings(format!("Failed to write {}: {e}", self.path.display()))

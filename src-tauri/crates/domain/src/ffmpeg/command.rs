@@ -161,12 +161,18 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "-hide_banner", "-y",
-                "-i", "input.webm",
-                "-c:v", "libx264",
-                "-c:a", "aac",
-                "-crf", "23",
-                "-preset", "fast",
+                "-hide_banner",
+                "-y",
+                "-i",
+                "input.webm",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-crf",
+                "23",
+                "-preset",
+                "fast",
                 "output.mp4",
             ]
         );

@@ -9,7 +9,11 @@ fn resolves_system_ffmpeg() {
     // This will skip if FFmpeg is not installed
     match resolver.ffmpeg_path() {
         Ok(path) => {
-            assert!(path.is_file(), "Resolved path should be a file: {}", path.display());
+            assert!(
+                path.is_file(),
+                "Resolved path should be a file: {}",
+                path.display()
+            );
             println!("Found FFmpeg at: {}", path.display());
 
             let caps = resolver.capabilities().expect("Should query capabilities");
@@ -26,10 +30,7 @@ fn resolves_system_ffmpeg() {
 
 #[test]
 fn returns_error_for_nonexistent_custom_path() {
-    let resolver = FfmpegResolver::new(
-        None,
-        Some("/nonexistent/path/ffmpeg".into()),
-    );
+    let resolver = FfmpegResolver::new(None, Some("/nonexistent/path/ffmpeg".into()));
 
     // Custom path doesn't exist, no sidecar, might fall back to system
     // The key behavior: it doesn't panic, and returns a usable result or clear error
