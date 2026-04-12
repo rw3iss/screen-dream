@@ -88,7 +88,7 @@ impl Default for AppSettings {
                 save_to_disk: true,
             },
             export: ExportSettings {
-                output_directory: String::new(), // resolved at runtime to ~/Videos or equivalent
+                output_directory: String::new(), // empty = ~/Pictures at runtime
             },
             shortcuts: ShortcutSettings {
                 start_stop_recording: "CommandOrControl+Shift+R".to_string(),

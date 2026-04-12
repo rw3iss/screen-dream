@@ -74,13 +74,18 @@ pub fn detect_compositor() -> Compositor {
 // KWin capture backend
 // ---------------------------------------------------------------------------
 
-/// CaptureBackend implementation using KWin D-Bus APIs.
+/// CaptureBackend implementation using KWin D-Bus APIs for window enumeration
+/// and xcap (portal-based) for frame capture.
 ///
-/// Window enumeration: KWin scripting API (`org.kde.kwin.Scripting`).
-/// Frame capture: `org.kde.KWin.ScreenShot2` D-Bus interface.
+/// Window enumeration: KWin scripting API (`org.kde.kwin.Scripting`) — sees all
+/// native Wayland windows, not just XWayland.
+/// Frame capture: Delegated to xcap (which uses xdg-desktop-portal on Wayland)
+/// because KWin ScreenShot2 requires compositor-level authorization.
 pub struct KwinCaptureBackend {
     platform: PlatformInfo,
     runtime: tokio::runtime::Runtime,
+    /// xcap backend used for actual frame capture (portal-based).
+    xcap_fallback: super::XcapCaptureBackend,
     /// Maps synthetic numeric window IDs to KWin UUID strings.
     uuid_map: Mutex<HashMap<u32, String>>,
 }
@@ -91,11 +96,13 @@ impl KwinCaptureBackend {
             "Initializing KWin capture backend for {:?}/{:?}",
             platform.os, platform.display_server
         );
+        let xcap_fallback = super::XcapCaptureBackend::new(platform.clone());
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| AppError::Capture(format!("Failed to create tokio runtime: {e}")))?;
         Ok(KwinCaptureBackend {
             platform,
             runtime,
+            xcap_fallback,
             uuid_map: Mutex::new(HashMap::new()),
         })
     }
@@ -581,11 +588,9 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
-        match source {
-            CaptureSource::Screen(s) => self.capture_screen(s),
-            CaptureSource::Window(w) => self.capture_window(w),
-            CaptureSource::Region(r) => self.capture_region(r),
-        }
+        // Delegate frame capture to xcap (which uses xdg-desktop-portal on Wayland).
+        // KWin ScreenShot2 requires compositor-level authorization that regular apps don't have.
+        self.xcap_fallback.capture_frame(source)
     }
 }
 

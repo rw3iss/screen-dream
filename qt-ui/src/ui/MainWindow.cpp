@@ -15,6 +15,7 @@
 #include <QMessageBox>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDir>
 #include <QUrl>
 #include <QApplication>
 #include <QJsonObject>
@@ -129,7 +130,7 @@ void MainWindow::setupCentralWidget()
     try {
         QJsonObject settings = AppState::instance().bridge().loadSettings();
         QString outputDir = settings.value("output_directory").toString();
-        if (outputDir.isEmpty()) outputDir = "/tmp";
+        if (outputDir.isEmpty()) outputDir = QDir::homePath() + "/Pictures";
         m_recentCaptures->setDirectory(outputDir);
     } catch (const std::exception &e) {
         m_recentCaptures->setDirectory("/tmp");
@@ -218,13 +219,14 @@ void MainWindow::onSourceSelected(const CaptureSource &source)
 
 static QString screenshotOutputPath()
 {
-    QString dir = "/tmp";
+    QString dir = QDir::homePath() + "/Pictures";
     try {
         QJsonObject settings = AppState::instance().bridge().loadSettings();
         QJsonObject exp = settings.value("export").toObject();
         QString d = exp.value("output_directory").toString();
         if (!d.isEmpty()) dir = d;
     } catch (...) {}
+    QDir().mkpath(dir);
 
     QString ts = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
     return dir + "/screenshot_" + ts + ".png";
