@@ -76,3 +76,90 @@ export interface AppSettings {
   ffmpeg: FfmpegSettings;
   general: GeneralSettings;
 }
+
+// --- Capture & Recording types (Plan 2) ---
+
+export interface ScreenSource {
+  monitor_id: number;
+}
+
+export interface WindowSource {
+  window_id: number;
+}
+
+export interface RegionSource {
+  monitor_id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type CaptureSource =
+  | { type: "Screen"; data: ScreenSource }
+  | { type: "Window"; data: WindowSource }
+  | { type: "Region"; data: RegionSource };
+
+export interface MonitorInfo {
+  id: number;
+  name: string;
+  friendly_name: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  scale_factor: number;
+  is_primary: boolean;
+}
+
+export interface WindowInfo {
+  id: number;
+  pid: number;
+  app_name: string;
+  title: string;
+  width: number;
+  height: number;
+  is_minimized: boolean;
+  is_focused: boolean;
+}
+
+export interface AvailableSources {
+  monitors: MonitorInfo[];
+  windows: WindowInfo[];
+  windows_unavailable: boolean;
+  windows_unavailable_reason: string | null;
+}
+
+export type RecordingState =
+  | "idle"
+  | "starting"
+  | "recording"
+  | "paused"
+  | "stopping"
+  | "completed"
+  | { failed: string };
+
+export interface RecordingConfig {
+  source: CaptureSource;
+  fps: number;
+  video_codec: string;
+  crf: number;
+  preset: string;
+  output_path: string;
+  capture_microphone: boolean;
+  microphone_device: string | null;
+}
+
+export interface RecordingStatus {
+  state: RecordingState;
+  elapsed_seconds: number;
+  frames_captured: number;
+  output_path: string | null;
+}
+
+export interface AudioDeviceInfo {
+  name: string;
+  is_default: boolean;
+  sample_rate: number;
+  channels: number;
+}

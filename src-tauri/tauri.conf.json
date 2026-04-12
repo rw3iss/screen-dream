@@ -13,9 +13,25 @@
     "windows": [
       {
         "title": "Screen Dream",
+        "label": "main",
         "width": 1024,
         "height": 768,
-        "resizable": true
+        "resizable": true,
+        "fullscreen": false
+      },
+      {
+        "title": "Region Selector",
+        "label": "region-selector",
+        "url": "#/region-selector",
+        "width": 800,
+        "height": 600,
+        "resizable": false,
+        "fullscreen": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true
       }
     ],
     "security": {

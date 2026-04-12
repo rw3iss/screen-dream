@@ -8,6 +8,7 @@ use std::sync::Arc;
 use domain::ffmpeg::FfmpegProvider;
 use domain::platform::PlatformInfo;
 use domain::settings::SettingsRepository;
+use infrastructure::capture::XcapCaptureBackend;
 use infrastructure::ffmpeg::FfmpegResolver;
 use infrastructure::settings::JsonSettingsRepository;
 use state::AppState;
@@ -92,11 +93,16 @@ pub fn run() {
 
             let is_wayland = platform.is_wayland();
 
+            // Create the capture backend
+            let capture_backend = Arc::new(XcapCaptureBackend::new(platform.clone()));
+
             // Register app state
             app.manage(AppState {
                 ffmpeg: ffmpeg_resolver,
                 settings: settings_repo,
                 platform,
+                capture: capture_backend,
+                active_recording: std::sync::Mutex::new(None),
             });
 
             // Setup system tray — skip on Wayland (known GDK protocol errors)
@@ -131,6 +137,17 @@ pub fn run() {
             commands::settings::reset_settings,
             commands::ffmpeg::get_ffmpeg_status,
             commands::shortcuts::register_shortcuts,
+            commands::capture::enumerate_sources,
+            commands::capture::take_screenshot,
+            commands::capture::take_screenshot_clipboard,
+            commands::capture::list_audio_devices_cmd,
+            commands::capture::start_recording,
+            commands::capture::stop_recording,
+            commands::capture::pause_recording,
+            commands::capture::resume_recording,
+            commands::capture::get_recording_status,
+            commands::capture::show_region_selector,
+            commands::capture::hide_region_selector,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
