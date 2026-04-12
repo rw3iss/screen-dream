@@ -12,6 +12,8 @@
 #include <QFont>
 #include <QFrame>
 #include <QThread>
+#include <QPixmap>
+#include <QScrollBar>
 
 // Worker that runs enumerateSources() off the main thread.
 class SourceEnumWorker : public QThread {
@@ -30,6 +32,43 @@ protected:
         }
         emit finished(result);
     }
+};
+
+// Worker that captures monitor thumbnails off the main thread.
+// NOTE: Only captures thumbnails for monitors (Screen type), which is fast
+// via xcap. Window capture requires portal permission and can be slow, so
+// windows show a static icon instead. This limitation can be revisited later.
+class ThumbnailCaptureWorker : public QThread {
+    Q_OBJECT
+public:
+    explicit ThumbnailCaptureWorker(QVector<uint32_t> monitorIds, QObject *parent = nullptr)
+        : QThread(parent), m_monitorIds(std::move(monitorIds)) {}
+signals:
+    void finished(QVector<QImage> thumbnails);
+protected:
+    void run() override {
+        QVector<QImage> results;
+        results.reserve(m_monitorIds.size());
+        for (uint32_t monId : m_monitorIds) {
+            CaptureSource src;
+            src.type = CaptureSource::Screen;
+            src.monitorId = monId;
+            try {
+                QImage frame = AppState::instance().bridge().captureFrame(src);
+                // Scale down to thumbnail size (48x36)
+                if (!frame.isNull()) {
+                    results.append(frame.scaled(48, 36, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                } else {
+                    results.append(QImage());
+                }
+            } catch (...) {
+                results.append(QImage());
+            }
+        }
+        emit finished(results);
+    }
+private:
+    QVector<uint32_t> m_monitorIds;
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +147,7 @@ void SourceBrowser::setupUi()
     m_monitorList = new QListWidget(m_contentWidget);
     m_monitorList->setStyleSheet(listStyle);
     m_monitorList->setMinimumHeight(80);
+    m_monitorList->setIconSize(QSize(48, 36));
     m_monitorList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_monitorList, &QListWidget::itemClicked, this, &SourceBrowser::onMonitorClicked);
     screensCol->addWidget(m_monitorList, 1);
@@ -123,6 +163,7 @@ void SourceBrowser::setupUi()
     m_windowList = new QListWidget(m_contentWidget);
     m_windowList->setStyleSheet(listStyle);
     m_windowList->setMinimumHeight(80);
+    m_windowList->setIconSize(QSize(48, 36));
     m_windowList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_windowList, &QListWidget::itemClicked, this, &SourceBrowser::onWindowClicked);
     windowsCol->addWidget(m_windowList, 1);
@@ -162,6 +203,7 @@ void SourceBrowser::toggleExpanded()
         refresh();
     } else {
         m_toggleBtn->setText(QString::fromUtf8("\u25B6 Browse Sources"));
+        stopThumbnailTimer();
     }
 }
 
@@ -196,6 +238,24 @@ void SourceBrowser::onSourcesLoaded(AvailableSources sources)
     populateMonitors(m_sources);
     populateWindows(m_sources);
     populateAreas();
+
+    // Set a static icon for window items since window capture requires portal
+    // permission and can be slow. Monitor thumbnails get live previews below.
+    for (int i = 0; i < m_windowList->count(); ++i) {
+        QListWidgetItem *item = m_windowList->item(i);
+        if (item->flags() & Qt::ItemIsSelectable) {
+            // Simple filled rectangle as a window icon placeholder
+            QPixmap pix(48, 36);
+            pix.fill(QColor("#2a2a4a"));
+            item->setIcon(QIcon(pix));
+        }
+    }
+
+    // Start live thumbnail updates for monitors
+    startThumbnailTimer();
+
+    // Trigger an immediate first capture
+    requestThumbnailUpdate();
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +502,72 @@ void SourceBrowser::addSavedArea(const QString &name, uint32_t monitorId,
 
     if (m_expanded)
         populateAreas();
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnail preview updates
+// ---------------------------------------------------------------------------
+
+void SourceBrowser::startThumbnailTimer()
+{
+    if (!m_thumbnailTimer) {
+        m_thumbnailTimer = new QTimer(this);
+        m_thumbnailTimer->setInterval(500);
+        connect(m_thumbnailTimer, &QTimer::timeout, this, &SourceBrowser::requestThumbnailUpdate);
+    }
+    m_thumbnailTimer->start();
+}
+
+void SourceBrowser::stopThumbnailTimer()
+{
+    if (m_thumbnailTimer)
+        m_thumbnailTimer->stop();
+}
+
+void SourceBrowser::requestThumbnailUpdate()
+{
+    // Don't queue another update if one is already in flight
+    if (m_thumbnailUpdatePending)
+        return;
+
+    // Collect monitor IDs for visible items only
+    QVector<uint32_t> visibleMonitorIds;
+    for (int i = 0; i < m_monitorList->count(); ++i) {
+        QListWidgetItem *item = m_monitorList->item(i);
+        // Check if item is visible in the viewport
+        QRect itemRect = m_monitorList->visualItemRect(item);
+        if (m_monitorList->viewport()->rect().intersects(itemRect)) {
+            visibleMonitorIds.append(item->data(Qt::UserRole).toUInt());
+        }
+    }
+
+    if (visibleMonitorIds.isEmpty())
+        return;
+
+    m_thumbnailUpdatePending = true;
+
+    auto *worker = new ThumbnailCaptureWorker(visibleMonitorIds, this);
+    connect(worker, &ThumbnailCaptureWorker::finished, this, &SourceBrowser::onThumbnailsCaptured);
+    connect(worker, &ThumbnailCaptureWorker::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
+void SourceBrowser::onThumbnailsCaptured(QVector<QImage> thumbnails)
+{
+    m_thumbnailUpdatePending = false;
+
+    // Map thumbnails back to visible monitor list items
+    int thumbIdx = 0;
+    for (int i = 0; i < m_monitorList->count() && thumbIdx < thumbnails.size(); ++i) {
+        QListWidgetItem *item = m_monitorList->item(i);
+        QRect itemRect = m_monitorList->visualItemRect(item);
+        if (m_monitorList->viewport()->rect().intersects(itemRect)) {
+            const QImage &thumb = thumbnails[thumbIdx++];
+            if (!thumb.isNull()) {
+                item->setIcon(QIcon(QPixmap::fromImage(thumb)));
+            }
+        }
+    }
 }
 
 // Required for Q_OBJECT in .cpp file

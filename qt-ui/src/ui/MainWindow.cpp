@@ -18,6 +18,7 @@
 #include <QDir>
 #include <QUrl>
 #include <QApplication>
+#include <QClipboard>
 #include <QJsonObject>
 #include <QFrame>
 
@@ -177,6 +178,23 @@ void MainWindow::setupStatusBar()
     }
     sb->addPermanentWidget(m_ffmpegLabel);
 
+    // Copy-to-clipboard button (hidden by default)
+    m_copyStatusBtn = new QPushButton(QString::fromUtf8("\xF0\x9F\x93\x8B"), this);
+    m_copyStatusBtn->setFlat(true);
+    m_copyStatusBtn->setCursor(Qt::PointingHandCursor);
+    m_copyStatusBtn->setToolTip("Copy status message to clipboard");
+    m_copyStatusBtn->setFixedSize(24, 20);
+    m_copyStatusBtn->setStyleSheet(
+        "QPushButton { color: #a0a0a0; border: none; padding: 0; font-size: 12px; background: transparent; }"
+        "QPushButton:hover { color: #e0e0e0; background-color: #2a2a4a; border-radius: 3px; }"
+    );
+    m_copyStatusBtn->setVisible(false);
+    connect(m_copyStatusBtn, &QPushButton::clicked, this, &MainWindow::onCopyStatusMessage);
+    sb->addWidget(m_copyStatusBtn);
+
+    // Show/hide copy button when status bar message changes
+    connect(sb, &QStatusBar::messageChanged, this, &MainWindow::onStatusMessageChanged);
+
     // Platform info
     m_platformLabel = new QLabel(this);
     m_platformLabel->setStyleSheet("color: #a0a0a0; font-size: 12px;");
@@ -301,4 +319,24 @@ void MainWindow::onWindowRecord()
 void MainWindow::onAreaRecord()
 {
     statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
+}
+
+void MainWindow::onStatusMessageChanged(const QString &message)
+{
+    if (message.isEmpty()) {
+        m_copyStatusBtn->setVisible(false);
+        m_lastStatusMessage.clear();
+    } else {
+        m_lastStatusMessage = message;
+        m_copyStatusBtn->setVisible(true);
+    }
+}
+
+void MainWindow::onCopyStatusMessage()
+{
+    if (!m_lastStatusMessage.isEmpty()) {
+        QApplication::clipboard()->setText(m_lastStatusMessage);
+        // Brief visual feedback — temporarily change button text
+        statusBar()->showMessage("Copied to clipboard!", 1500);
+    }
 }

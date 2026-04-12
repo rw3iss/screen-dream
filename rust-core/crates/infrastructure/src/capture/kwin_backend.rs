@@ -84,10 +84,12 @@ pub fn detect_compositor() -> Compositor {
 pub struct KwinCaptureBackend {
     platform: PlatformInfo,
     runtime: tokio::runtime::Runtime,
-    /// xcap backend used for actual frame capture (portal-based).
+    /// xcap backend used for screen/region capture (portal-based).
     xcap_fallback: super::XcapCaptureBackend,
     /// Maps synthetic numeric window IDs to KWin UUID strings.
     uuid_map: Mutex<HashMap<u32, String>>,
+    /// Maps synthetic numeric window IDs to geometry (x, y, w, h).
+    geometry_map: Mutex<HashMap<u32, (i32, i32, u32, u32)>>,
 }
 
 impl KwinCaptureBackend {
@@ -104,6 +106,7 @@ impl KwinCaptureBackend {
             runtime,
             xcap_fallback,
             uuid_map: Mutex::new(HashMap::new()),
+            geometry_map: Mutex::new(HashMap::new()),
         })
     }
 
@@ -241,6 +244,10 @@ for (let i = 0; i < clients.length; i++) {
             AppError::Capture(format!("UUID map lock poisoned: {e}"))
         })?;
         uuid_map.clear();
+        let mut geom_map = self.geometry_map.lock().map_err(|e| {
+            AppError::Capture(format!("Geometry map lock poisoned: {e}"))
+        })?;
+        geom_map.clear();
 
         let mut next_id: u32 = 1;
 
@@ -271,16 +278,19 @@ for (let i = 0; i < clients.length; i++) {
                 continue;
             }
 
+            let x: i32 = geom_parts[0].parse().unwrap_or(0);
+            let y: i32 = geom_parts[1].parse().unwrap_or(0);
             let width: u32 = geom_parts[2].parse().unwrap_or(0);
             let height: u32 = geom_parts[3].parse().unwrap_or(0);
 
             let is_minimized = minimized_str == "1";
             let is_focused = active_str == "1";
 
-            // Assign a synthetic numeric ID and store the UUID mapping.
+            // Assign a synthetic numeric ID and store the UUID + geometry mapping.
             let id = next_id;
             next_id += 1;
             uuid_map.insert(id, uuid.clone());
+            geom_map.insert(id, (x, y, width, height));
 
             windows.push(WindowInfo {
                 id,
@@ -588,9 +598,42 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
-        // Delegate frame capture to xcap (which uses xdg-desktop-portal on Wayland).
-        // KWin ScreenShot2 requires compositor-level authorization that regular apps don't have.
-        self.xcap_fallback.capture_frame(source)
+        match source {
+            CaptureSource::Window(w) => {
+                // For window capture: look up the window geometry from KWin enumeration
+                // and capture that region of the screen instead (xcap can't find KWin window IDs).
+                let geom_map = self.geometry_map.lock().map_err(|e| {
+                    AppError::Capture(format!("Geometry map lock poisoned: {e}"))
+                })?;
+                if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
+                    // Find which monitor contains this window
+                    let monitors = Monitor::all().map_err(|e| {
+                        AppError::Capture(format!("Failed to enumerate monitors: {e}"))
+                    })?;
+                    let monitor = monitors.into_iter().next().ok_or_else(|| {
+                        AppError::Capture("No monitors found".to_string())
+                    })?;
+                    let monitor_id = monitor.id().unwrap_or(0);
+
+                    // Capture as a region
+                    let region = RegionSource {
+                        monitor_id,
+                        x,
+                        y,
+                        width,
+                        height,
+                    };
+                    self.xcap_fallback.capture_frame(&CaptureSource::Region(region))
+                } else {
+                    Err(AppError::Capture(format!(
+                        "Window ID {} not found in geometry map. Try refreshing sources first.",
+                        w.window_id
+                    )))
+                }
+            }
+            // Screen and region capture delegate directly to xcap.
+            _ => self.xcap_fallback.capture_frame(source),
+        }
     }
 }
 

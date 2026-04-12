@@ -11,6 +11,9 @@
 #include <QJsonObject>
 #include <QString>
 #include <QThread>
+#include <QTimer>
+#include <QImage>
+#include <QIcon>
 
 #include "core/RustBridge.h"
 
@@ -40,6 +43,7 @@ private slots:
     void onWindowClicked(QListWidgetItem *item);
     void onAreaClicked(QListWidgetItem *item);
     void onAreaContextMenu(const QPoint &pos);
+    void onThumbnailsCaptured(QVector<QImage> thumbnails);
 
 private:
     void setupUi();
@@ -49,6 +53,9 @@ private:
     void loadSavedAreas();
     void saveSavedAreas();
     QString savedAreasPath() const;
+    void startThumbnailTimer();
+    void stopThumbnailTimer();
+    void requestThumbnailUpdate();
 
     bool m_expanded = false;
     bool m_loading = false;
@@ -67,6 +74,10 @@ private:
 
     // Saved areas
     QJsonArray m_savedAreas;
+
+    // Thumbnail preview timer
+    QTimer *m_thumbnailTimer = nullptr;
+    bool m_thumbnailUpdatePending = false;
 
     // Track selected source type/index
     int m_selectedMonitorRow = -1;

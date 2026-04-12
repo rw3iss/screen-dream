@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QMenuBar>
 #include <QStatusBar>
+#include <QString>
 
 class CaptureCard;
 class RecentCaptures;
@@ -29,6 +30,8 @@ private slots:
     void onScreenRecord();
     void onWindowRecord();
     void onAreaRecord();
+    void onStatusMessageChanged(const QString &message);
+    void onCopyStatusMessage();
 
 private:
     void setupMenuBar();
@@ -53,6 +56,8 @@ private:
     QPushButton *m_settingsBtn;
     QLabel *m_ffmpegLabel;
     QLabel *m_platformLabel;
+    QPushButton *m_copyStatusBtn;
+    QString m_lastStatusMessage;
 };
 
 #endif // MAINWINDOW_H
