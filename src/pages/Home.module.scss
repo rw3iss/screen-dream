@@ -1,0 +1,33 @@
+@use "../styles/variables" as *;
+
+.btn {
+  padding: $spacing-sm $spacing-md;
+  border: 1px solid var(--color-border);
+  border-radius: $radius-sm;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: background $transition-fast, border-color $transition-fast;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+
+  &:hover:not(:disabled) {
+    background: var(--color-bg-tertiary);
+    border-color: var(--color-border-hover);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.btnRegion {
+  margin-top: $spacing-sm;
+}
+
+.selectedSource {
+  margin-top: $spacing-xs;
+  font-size: $font-size-sm;
+  color: var(--color-text-secondary);
+}

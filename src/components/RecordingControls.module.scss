@@ -1,0 +1,136 @@
+@use "sass:color";
+@use "../styles/variables" as *;
+
+.recordingControls {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+}
+
+.recordingTimer {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-sm $spacing-md;
+  background: var(--color-bg-tertiary);
+  border-radius: $radius-sm;
+  font-family: $font-family-mono;
+}
+
+.recordingDot {
+  width: 10px;
+  height: 10px;
+  border-radius: $radius-full;
+
+  &.active {
+    background: var(--color-error);
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  &.paused {
+    background: var(--color-warning);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.time {
+  font-size: $font-size-lg;
+  font-weight: $font-weight-semibold;
+  color: var(--color-text-primary);
+}
+
+.frames {
+  font-size: $font-size-xs;
+  color: var(--color-text-muted);
+  margin-left: auto;
+}
+
+.recordingButtons {
+  display: flex;
+  gap: $spacing-sm;
+}
+
+.btn {
+  padding: $spacing-sm $spacing-md;
+  border: 1px solid var(--color-border);
+  border-radius: $radius-sm;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: background $transition-fast, border-color $transition-fast, color $transition-fast;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+
+  &:hover:not(:disabled) {
+    background: var(--color-bg-tertiary);
+    border-color: var(--color-border-hover);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.btnRecord {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    background: color.adjust(#f87171, $lightness: -10%);
+    border-color: color.adjust(#f87171, $lightness: -10%);
+  }
+}
+
+.btnStop {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    background: color.adjust(#f87171, $lightness: -10%);
+    border-color: color.adjust(#f87171, $lightness: -10%);
+  }
+}
+
+.btnPause {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+  color: #000;
+
+  &:hover:not(:disabled) {
+    background: color.adjust(#fbbf24, $lightness: -10%);
+    border-color: color.adjust(#fbbf24, $lightness: -10%);
+  }
+}
+
+.btnResume {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #000;
+
+  &:hover:not(:disabled) {
+    background: color.adjust(#34d399, $lightness: -10%);
+    border-color: color.adjust(#34d399, $lightness: -10%);
+  }
+}
+
+.error {
+  color: var(--color-error);
+  font-size: $font-size-sm;
+}
+
+.warning {
+  color: var(--color-warning);
+  font-size: $font-size-sm;
+}
+
+.success {
+  color: var(--color-success);
+  font-size: $font-size-sm;
+}
