@@ -9,6 +9,9 @@
 
 class CaptureCard;
 class RecentCaptures;
+class SourceBrowser;
+
+struct CaptureSource;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -19,6 +22,7 @@ public:
 private slots:
     void onSettingsClicked();
     void onAbout();
+    void onSourceSelected(const CaptureSource &source);
 
 private:
     void setupMenuBar();
@@ -30,8 +34,14 @@ private:
     CaptureCard *m_windowCard;
     CaptureCard *m_areaCard;
 
+    // Source browser
+    SourceBrowser *m_sourceBrowser;
+
     // Recent captures
     RecentCaptures *m_recentCaptures;
+
+    // Currently selected capture source
+    CaptureSource *m_selectedSource;
 
     // Status bar widgets
     QPushButton *m_settingsBtn;

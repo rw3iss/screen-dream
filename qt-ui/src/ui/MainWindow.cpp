@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include "widgets/CaptureCard.h"
+#include "widgets/SourceBrowser.h"
 #include "widgets/RecentCaptures.h"
 #include "core/AppState.h"
 
@@ -17,7 +18,7 @@
 #include <QFrame>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
+    : QMainWindow(parent), m_selectedSource(nullptr)
 {
     setWindowTitle("Screen Dream");
     resize(800, 600);
@@ -78,6 +79,12 @@ void MainWindow::setupCentralWidget()
     cardsLayout->addWidget(m_areaCard);
 
     mainLayout->addLayout(cardsLayout);
+
+    // --- Source browser (collapsible) ---
+    m_sourceBrowser = new SourceBrowser(central);
+    mainLayout->addWidget(m_sourceBrowser);
+    connect(m_sourceBrowser, &SourceBrowser::sourceSelected,
+            this, &MainWindow::onSourceSelected);
 
     // --- Separator with label ---
     auto *sepLayout = new QHBoxLayout();
@@ -183,4 +190,10 @@ void MainWindow::onAbout()
         "Screen Dream v0.1.0\n\n"
         "A modern screen capture and recording application.\n"
         "Built with Qt and Rust.");
+}
+
+void MainWindow::onSourceSelected(const CaptureSource &source)
+{
+    delete m_selectedSource;
+    m_selectedSource = new CaptureSource(source);
 }

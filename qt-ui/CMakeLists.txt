@@ -47,6 +47,7 @@ set(SOURCES
     src/ui/MainWindow.cpp
     src/widgets/CaptureCard.cpp
     src/widgets/RecentCaptures.cpp
+    src/widgets/SourceBrowser.cpp
 )
 
 set(HEADERS
@@ -55,6 +56,7 @@ set(HEADERS
     src/ui/MainWindow.h
     src/widgets/CaptureCard.h
     src/widgets/RecentCaptures.h
+    src/widgets/SourceBrowser.h
 )
 
 set(RESOURCES

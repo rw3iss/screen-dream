@@ -162,7 +162,7 @@ void RecentCaptures::showPlaceholder()
 QWidget *RecentCaptures::createThumbnail(const QFileInfo &fi)
 {
     auto *widget = new ThumbnailWidget(fi.absoluteFilePath(), m_container);
-    widget->setFixedSize(100, 100);
+    widget->setFixedSize(100, 115);
     widget->setCursor(Qt::PointingHandCursor);
     widget->setToolTip(fi.fileName());
     widget->setStyleSheet(
@@ -215,8 +215,30 @@ QWidget *RecentCaptures::createThumbnail(const QFileInfo &fi)
     QFontMetrics fm(nameLabel->font());
     nameLabel->setText(fm.elidedText(fi.fileName(), Qt::ElideMiddle, 88));
 
+    // Determine capture type label
+    QString typeText;
+    QString fileNameLower = fi.fileName().toLower();
+    if (fileNameLower.contains("screenshot")) {
+        typeText = "IMAGE";
+    } else if (fileNameLower.contains("recording")) {
+        typeText = "VIDEO";
+    } else if (suffix == "mp4" || suffix == "webm" || suffix == "mkv") {
+        typeText = "VIDEO";
+    } else if (suffix == "png" || suffix == "jpg" || suffix == "jpeg" || suffix == "webp") {
+        typeText = "IMAGE";
+    }
+
+    auto *typeLabel = new QLabel(typeText, widget);
+    typeLabel->setAlignment(Qt::AlignCenter);
+    typeLabel->setStyleSheet(
+        "color: #a0a0a0; font-size: 10px; font-weight: bold; "
+        "background-color: transparent; border: none;"
+    );
+    typeLabel->setMaximumWidth(90);
+
     layout->addWidget(imgLabel);
     layout->addWidget(nameLabel);
+    layout->addWidget(typeLabel);
 
     return widget;
 }
