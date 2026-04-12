@@ -257,9 +257,9 @@ pub struct SDFfmpegStatus {
 
 /// Opaque handle for an in-progress recording session.
 /// The internal fields are not exposed across the FFI boundary.
+/// The `inner` pointer is managed by the recording module.
 pub struct SDRecordingHandle {
-    // Will hold RecordingPipeline + optional AudioCapture in future tasks.
-    _private: (),
+    pub(crate) inner: *mut std::ffi::c_void,
 }
 
 // ---------------------------------------------------------------------------

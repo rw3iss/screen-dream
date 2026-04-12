@@ -4,6 +4,11 @@
 //! Every public symbol is prefixed with `sd_` to avoid name collisions.
 
 pub mod types;
+pub mod platform;
+pub mod ffmpeg;
+pub mod settings;
+pub mod capture;
+pub mod recording;
 
 use std::ffi::c_char;
 use std::sync::{Arc, OnceLock};
@@ -14,6 +19,10 @@ use domain::settings::SettingsRepository;
 use infrastructure::capture::XcapCaptureBackend;
 use infrastructure::ffmpeg::FfmpegResolver;
 use infrastructure::settings::JsonSettingsRepository;
+
+// Re-export free functions so submodules can call `crate::sd_free_string`.
+pub use types::sd_free_string;
+pub use types::sd_free_error;
 
 use types::{from_c_str, SDError};
 

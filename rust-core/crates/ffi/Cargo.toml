@@ -9,3 +9,5 @@ crate-type = ["cdylib"]
 [dependencies]
 domain = { path = "../domain" }
 infrastructure = { path = "../infrastructure" }
+serde_json = "1"
+tracing = "0.1"
