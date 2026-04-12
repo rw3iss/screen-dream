@@ -1,50 +1,41 @@
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use domain::capture::RecordingConfig;
+use domain::capture::{CaptureBackend, RecordingConfig};
 use domain::error::{AppError, AppResult};
 use domain::ffmpeg::FfmpegCommand;
-use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, info, warn};
 
 use crate::capture::XcapCaptureBackend;
-use crate::ffmpeg::process::FfmpegProcess;
 
 /// A recording pipeline that captures frames in a loop and pipes them to FFmpeg.
 ///
-/// Runs frame capture on a dedicated tokio blocking task and writes raw RGBA
-/// bytes into FFmpeg's stdin. FFmpeg encodes the stream to the configured
-/// video codec and writes the output file.
+/// Uses a dedicated OS thread (not tokio) since frame capture via xcap is
+/// synchronous and we need a real thread to avoid blocking the async runtime.
 pub struct RecordingPipeline {
-    /// Shared flag: true while the pipeline should keep running.
     running: Arc<AtomicBool>,
-    /// Shared flag: true while recording is paused.
     paused: Arc<AtomicBool>,
-    /// Handle to the capture task (so we can await it on stop).
-    capture_handle: Option<tokio::task::JoinHandle<AppResult<PipelineResult>>>,
-    /// Output file path.
+    capture_thread: Option<thread::JoinHandle<AppResult<PipelineResult>>>,
     output_path: PathBuf,
 }
 
 /// Result returned when the pipeline finishes.
 #[derive(Debug)]
 pub struct PipelineResult {
-    /// Path to the recorded video file.
     pub output_path: PathBuf,
-    /// Total number of frames captured.
     pub frames_captured: u64,
-    /// Total recording duration.
     pub elapsed: Duration,
 }
 
 impl RecordingPipeline {
-    /// Start a new recording pipeline with the given configuration.
+    /// Start a new recording pipeline.
     ///
-    /// `ffmpeg_path` is the path to the FFmpeg binary.
-    /// `backend` is the capture backend (must be Send + Sync).
-    /// `config` specifies capture source, FPS, codec settings, and output path.
+    /// Spawns an OS thread that captures frames and pipes raw RGBA to FFmpeg.
     pub fn start(
         ffmpeg_path: PathBuf,
         backend: Arc<XcapCaptureBackend>,
@@ -58,7 +49,7 @@ impl RecordingPipeline {
         let paused_clone = paused.clone();
         let output_clone = output_path.clone();
 
-        let capture_handle = tokio::spawn(async move {
+        let capture_thread = thread::spawn(move || {
             run_capture_loop(
                 ffmpeg_path,
                 backend,
@@ -67,7 +58,6 @@ impl RecordingPipeline {
                 paused_clone,
                 output_clone,
             )
-            .await
         });
 
         info!("Recording pipeline started -> {}", output_path.display());
@@ -75,26 +65,23 @@ impl RecordingPipeline {
         Ok(RecordingPipeline {
             running,
             paused,
-            capture_handle: Some(capture_handle),
+            capture_thread: Some(capture_thread),
             output_path,
         })
     }
 
-    /// Stop the recording and finalize the output file.
-    ///
-    /// Returns the path to the recorded video and stats.
-    pub async fn stop(&mut self) -> AppResult<PipelineResult> {
+    /// Stop the recording and wait for the capture thread to finish.
+    pub fn stop(&mut self) -> AppResult<PipelineResult> {
         info!("Stopping recording pipeline");
         self.running.store(false, Ordering::SeqCst);
-        // Unpause if paused, so the loop can exit.
         self.paused.store(false, Ordering::SeqCst);
 
-        if let Some(handle) = self.capture_handle.take() {
-            match handle.await {
+        if let Some(handle) = self.capture_thread.take() {
+            match handle.join() {
                 Ok(result) => result,
-                Err(e) => Err(AppError::Capture(format!(
-                    "Recording task panicked: {e}"
-                ))),
+                Err(_) => Err(AppError::Capture(
+                    "Recording thread panicked".to_string(),
+                )),
             }
         } else {
             Err(AppError::Capture(
@@ -103,41 +90,34 @@ impl RecordingPipeline {
         }
     }
 
-    /// Pause the recording. Frames will not be captured while paused.
     pub fn pause(&self) {
         info!("Pausing recording pipeline");
         self.paused.store(true, Ordering::SeqCst);
     }
 
-    /// Resume a paused recording.
     pub fn resume(&self) {
         info!("Resuming recording pipeline");
         self.paused.store(false, Ordering::SeqCst);
     }
 
-    /// Check if the pipeline is currently running.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Check if the pipeline is currently paused.
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
     }
 
-    /// Get the output file path.
     pub fn output_path(&self) -> &Path {
         &self.output_path
     }
 }
 
-use std::path::Path;
-
-/// The core capture loop. Runs inside a tokio task.
+/// The core capture loop. Runs on a dedicated OS thread.
 ///
-/// Captures frames from the backend at the target FPS, and pipes raw RGBA
-/// bytes into FFmpeg's stdin for encoding.
-async fn run_capture_loop(
+/// Captures frames synchronously from xcap, writes raw RGBA bytes to
+/// FFmpeg's stdin via a standard process pipe.
+fn run_capture_loop(
     ffmpeg_path: PathBuf,
     backend: Arc<XcapCaptureBackend>,
     config: RecordingConfig,
@@ -145,30 +125,24 @@ async fn run_capture_loop(
     paused: Arc<AtomicBool>,
     output_path: PathBuf,
 ) -> AppResult<PipelineResult> {
-    // We need to know the frame dimensions before building the FFmpeg command.
-    // Capture a single probe frame to get width/height.
-    let probe_frame = {
-        let source = config.source.clone();
-        let backend = backend.clone();
-        tokio::task::spawn_blocking(move || {
-            use domain::capture::CaptureBackend;
-            backend.capture_frame(&source)
-        })
-        .await
-        .map_err(|e| AppError::Capture(format!("Probe frame task failed: {e}")))?
-    }?;
-
+    // Capture a probe frame to get dimensions.
+    let probe_frame = backend.capture_frame(&config.source)?;
     let width = probe_frame.width;
     let height = probe_frame.height;
     let fps = config.fps;
 
+    // Ensure dimensions are even (required by libx264).
+    let enc_width = width & !1;
+    let enc_height = height & !1;
+
     info!(
-        "Recording: {}x{} @ {} FPS, crf={}, preset={}, output={}",
-        width, height, fps, config.crf, config.preset, output_path.display()
+        "Recording: {}x{} (enc: {}x{}) @ {} FPS, codec={}, crf={}, preset={}, output={}",
+        width, height, enc_width, enc_height, fps,
+        config.video_codec, config.crf, config.preset, output_path.display()
     );
 
-    // Build the FFmpeg command for raw RGBA pipe input -> encoded video output.
-    let command = FfmpegCommand::new()
+    // Build FFmpeg arguments.
+    let args = FfmpegCommand::new()
         .overwrite()
         .arg("-f")
         .arg("rawvideo")
@@ -183,72 +157,62 @@ async fn run_capture_loop(
         .preset(&config.preset)
         .output(output_path.to_str().ok_or_else(|| {
             AppError::Capture("Output path is not valid UTF-8".to_string())
-        })?);
+        })?)
+        .build();
 
-    // Spawn FFmpeg process.
-    let mut ffmpeg = FfmpegProcess::spawn(&ffmpeg_path, command)?;
+    // Spawn FFmpeg as a standard process (not tokio).
+    debug!("Spawning FFmpeg: {} {}", ffmpeg_path.display(), args.join(" "));
+    let mut child = Command::new(&ffmpeg_path)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            AppError::FfmpegExecution(format!(
+                "Failed to spawn FFmpeg at {}: {e}",
+                ffmpeg_path.display()
+            ))
+        })?;
+
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        AppError::FfmpegExecution("Failed to get FFmpeg stdin".to_string())
+    })?;
 
     let frame_duration = Duration::from_secs_f64(1.0 / fps as f64);
     let mut frames_captured: u64 = 0;
     let start_time = Instant::now();
 
-    // Write the probe frame first (we already have it).
-    if let Some(stdin) = ffmpeg.stdin() {
-        if let Err(e) = stdin.write_all(&probe_frame.data).await {
-            error!("Failed to write probe frame to FFmpeg stdin: {e}");
-            running.store(false, Ordering::SeqCst);
-        } else {
-            frames_captured += 1;
-        }
+    // Write the probe frame first.
+    if let Err(e) = stdin.write_all(&probe_frame.data) {
+        error!("Failed to write probe frame: {e}");
+        running.store(false, Ordering::SeqCst);
+    } else {
+        frames_captured += 1;
     }
 
     // Main capture loop.
     while running.load(Ordering::SeqCst) {
         let frame_start = Instant::now();
 
-        // If paused, sleep briefly and skip capturing.
         if paused.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            thread::sleep(Duration::from_millis(50));
             continue;
         }
 
-        // Capture a frame on a blocking thread (xcap capture is synchronous).
-        let source = config.source.clone();
-        let backend_clone = backend.clone();
-        let frame_result = tokio::task::spawn_blocking(move || {
-            use domain::capture::CaptureBackend;
-            backend_clone.capture_frame(&source)
-        })
-        .await;
-
-        let frame = match frame_result {
-            Ok(Ok(f)) => f,
-            Ok(Err(e)) => {
+        // Capture a frame (synchronous).
+        let frame = match backend.capture_frame(&config.source) {
+            Ok(f) => f,
+            Err(e) => {
                 warn!("Frame capture failed, skipping: {e}");
-                tokio::time::sleep(frame_duration).await;
+                thread::sleep(frame_duration);
                 continue;
             }
-            Err(e) => {
-                error!("Frame capture task panicked: {e}");
-                break;
-            }
         };
 
-        // Write frame data to FFmpeg stdin.
-        let write_ok = if let Some(stdin) = ffmpeg.stdin() {
-            match stdin.write_all(&frame.data).await {
-                Ok(()) => true,
-                Err(e) => {
-                    error!("Failed to write frame to FFmpeg stdin: {e}");
-                    false
-                }
-            }
-        } else {
-            error!("FFmpeg stdin is not available");
-            false
-        };
-
-        if !write_ok {
+        // Write raw RGBA to FFmpeg stdin.
+        if let Err(e) = stdin.write_all(&frame.data) {
+            error!("Failed to write frame to FFmpeg stdin: {e}");
             break;
         }
 
@@ -256,7 +220,7 @@ async fn run_capture_loop(
 
         if frames_captured % (fps as u64 * 5) == 0 {
             debug!(
-                "Recording progress: {} frames captured, {:.1}s elapsed",
+                "Recording progress: {} frames, {:.1}s elapsed",
                 frames_captured,
                 start_time.elapsed().as_secs_f64()
             );
@@ -265,22 +229,21 @@ async fn run_capture_loop(
         // Sleep to maintain target FPS.
         let elapsed = frame_start.elapsed();
         if elapsed < frame_duration {
-            tokio::time::sleep(frame_duration - elapsed).await;
+            thread::sleep(frame_duration - elapsed);
         }
     }
 
-    // Close FFmpeg stdin to signal end of input.
-    drop(ffmpeg.stdin().take());
-    // We need to drop stdin by taking the child's stdin. The FfmpegProcess API
-    // gives us &mut ChildStdin. To actually close it we must drop the process stdin.
-    // Since FfmpegProcess doesn't expose a close_stdin(), we wait for ffmpeg which
-    // will see EOF when our process drops.
+    // Close stdin to signal EOF to FFmpeg.
+    drop(stdin);
 
-    // Wait for FFmpeg to finish encoding.
+    // Wait for FFmpeg to finish.
     info!("Waiting for FFmpeg to finalize output...");
-    let exit_code = ffmpeg.wait().await?;
-    if exit_code != 0 {
-        warn!("FFmpeg exited with non-zero code: {exit_code}");
+    let status = child.wait().map_err(|e| {
+        AppError::FfmpegExecution(format!("Failed to wait for FFmpeg: {e}"))
+    })?;
+
+    if !status.success() {
+        warn!("FFmpeg exited with status: {status}");
     }
 
     let elapsed = start_time.elapsed();

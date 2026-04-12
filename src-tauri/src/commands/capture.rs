@@ -122,7 +122,7 @@ pub fn start_recording(
 /// Stop the current recording.
 /// Returns the path to the output video file.
 #[tauri::command]
-pub async fn stop_recording(
+pub fn stop_recording(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<String> {
@@ -153,8 +153,8 @@ pub async fn stop_recording(
         None
     };
 
-    // Stop video recording (async).
-    let pipeline_result = recording.pipeline.stop().await?;
+    // Stop video recording.
+    let pipeline_result = recording.pipeline.stop()?;
     let video_path = pipeline_result.output_path;
 
     // If we have audio, mux it with the video using FFmpeg.

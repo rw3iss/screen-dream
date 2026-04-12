@@ -4,7 +4,7 @@
   position: fixed;
   inset: 0;
   cursor: crosshair;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.05);
   z-index: $z-overlay;
   user-select: none;
 }
