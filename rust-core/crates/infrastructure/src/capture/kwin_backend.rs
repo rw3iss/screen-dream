@@ -162,36 +162,18 @@ impl KwinCaptureBackend {
             .map_err(|e| AppError::Capture(format!("D-Bus session connection failed: {e}")))?;
 
         // Write the enumeration script to a temp file.
-        // Use bufferGeometry which represents the actual rendered surface
-        // including decorations but excluding compositor-added shadow.
-        // Then add the titlebar back by extending up from clientGeometry.y
-        // to bufferGeometry.y (or frameGeometry.y if bufferGeometry doesn't
-        // include the titlebar).
-        //
-        // On KDE Wayland, the window's actual pixel position in the compositor's
-        // output corresponds to bufferGeometry, not frameGeometry.
+        // Use frameGeometry which is the window rectangle including
+        // titlebar decorations. The PipeWire composited frame also includes
+        // the window shadow around the frameGeometry, so we include it by
+        // expanding the crop slightly. This matches what the user visually
+        // sees as "the window".
         let script_content = r#"
 const clients = workspace.windowList();
 for (let i = 0; i < clients.length; i++) {
     const c = clients[i];
     if (c.normalWindow) {
-        var cg = c.clientGeometry;
-        var bg = c.bufferGeometry;
         var fg = c.frameGeometry;
-        // bufferGeometry is the actual rendered surface.
-        // clientGeometry excludes titlebar.
-        // We want: from bufferGeometry origin with bufferGeometry size
-        // (this captures the titlebar + content, matching what's rendered).
-        var x = bg.x;
-        var y = bg.y;
-        var w = bg.width;
-        var h = bg.height;
-        // If bufferGeometry doesn't include titlebar (y > fg.y), extend up
-        if (bg.y > fg.y) {
-            y = fg.y;
-            h = bg.height + (bg.y - fg.y);
-        }
-        console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + x + "," + y + "," + w + "," + h + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
+        console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + fg.x + "," + fg.y + "," + fg.width + "," + fg.height + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
     }
 }
 "#;
@@ -773,27 +755,11 @@ impl CaptureBackend for KwinCaptureBackend {
                     // coordinate origin for the monitor may differ from PipeWire's.
                     // We empirically adjust by using the monitor's scale factor
                     // as a divisor if the coordinates are scaled.
-                    // KWin reports frameGeometry at the window's content edge,
-                    // but PipeWire's composited output includes the window shadow
-                    // which extends beyond the geometry. The shadow shifts the
-                    // visual window position relative to the reported coordinates.
-                    //
-                    // On Breeze theme the shadow is ~64px left, ~51px top.
-                    // We detect the shadow offset by comparing PipeWire frame
-                    // dimensions with monitor logical dimensions — if they match
-                    // 1:1 (no scaling), we apply the known Breeze shadow offset.
-                    //
-                    // For maximized windows (x == stream_x), no shadow is rendered
-                    // so no offset is needed.
-                    let is_maximized = x == stream_x && width as i32 >= (fw as i32 - 2);
-                    let shadow_offset_x: i32 = if is_maximized { 0 } else { 54 };
-                    let shadow_offset_y: i32 = if is_maximized { 0 } else { 46 };
-
-                    let local_x = x - stream_x - shadow_offset_x;
-                    let local_y = y - stream_y - shadow_offset_y;
+                    let local_x = x - stream_x;
+                    let local_y = y - stream_y;
 
                     info!(
-                        "Window crop: desktop=({x},{y} {width}x{height}), stream=({stream_x},{stream_y}), shadow=({shadow_offset_x},{shadow_offset_y}), local=({local_x},{local_y}), frame={fw}x{fh}"
+                        "Window crop: desktop=({x},{y} {width}x{height}), stream=({stream_x},{stream_y}), local=({local_x},{local_y}), frame={fw}x{fh}"
                     );
                     // Clamp to frame bounds.
                     let cx = (local_x.max(0) as u32).min(fw.saturating_sub(1));
