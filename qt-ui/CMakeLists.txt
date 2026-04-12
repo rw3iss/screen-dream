@@ -4,6 +4,7 @@ project(ScreenDream LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
 
@@ -43,14 +44,24 @@ set(SOURCES
     src/main.cpp
     src/core/RustBridge.cpp
     src/core/AppState.cpp
+    src/ui/MainWindow.cpp
+    src/widgets/CaptureCard.cpp
+    src/widgets/RecentCaptures.cpp
 )
 
 set(HEADERS
     src/core/RustBridge.h
     src/core/AppState.h
+    src/ui/MainWindow.h
+    src/widgets/CaptureCard.h
+    src/widgets/RecentCaptures.h
 )
 
-add_executable(ScreenDream ${SOURCES} ${HEADERS})
+set(RESOURCES
+    src/resources/resources.qrc
+)
+
+add_executable(ScreenDream ${SOURCES} ${HEADERS} ${RESOURCES})
 add_dependencies(ScreenDream rust_ffi)
 
 target_include_directories(ScreenDream PRIVATE
