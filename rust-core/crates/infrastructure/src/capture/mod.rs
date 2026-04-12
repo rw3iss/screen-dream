@@ -1,6 +1,7 @@
 pub mod audio_capture;
 pub mod kwin_backend;
 pub mod portal_recorder;
+pub mod portal_screenshot;
 pub mod recording_pipeline;
 pub mod screenshot;
 pub mod xcap_backend;

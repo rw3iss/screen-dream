@@ -1415,6 +1415,7 @@ dependencies = [
  "cpal",
  "dirs",
  "domain",
+ "futures-util",
  "hound",
  "image",
  "nix 0.29.0",

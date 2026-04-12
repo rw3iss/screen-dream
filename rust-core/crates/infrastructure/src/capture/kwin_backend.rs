@@ -599,31 +599,28 @@ impl CaptureBackend for KwinCaptureBackend {
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
         match source {
+            CaptureSource::Screen(_) => {
+                // Capture full screen via xdg-desktop-portal (silent, no dialog).
+                debug!("Capturing screen via portal screenshot (silent)");
+                super::portal_screenshot::capture_full_frame(&self.runtime)
+            }
             CaptureSource::Window(w) => {
-                // For window capture: look up the window geometry from KWin enumeration
-                // and capture that region of the screen instead (xcap can't find KWin window IDs).
+                // Capture full screen via portal, then crop to window geometry.
                 let geom_map = self.geometry_map.lock().map_err(|e| {
                     AppError::Capture(format!("Geometry map lock poisoned: {e}"))
                 })?;
                 if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
-                    // Find which monitor contains this window
-                    let monitors = Monitor::all().map_err(|e| {
-                        AppError::Capture(format!("Failed to enumerate monitors: {e}"))
-                    })?;
-                    let monitor = monitors.into_iter().next().ok_or_else(|| {
-                        AppError::Capture("No monitors found".to_string())
-                    })?;
-                    let monitor_id = monitor.id().unwrap_or(0);
-
-                    // Capture as a region
-                    let region = RegionSource {
-                        monitor_id,
+                    debug!(
+                        "Capturing window {} via portal screenshot + crop ({x},{y} {width}x{height})",
+                        w.window_id
+                    );
+                    super::portal_screenshot::capture_cropped_frame(
+                        &self.runtime,
                         x,
                         y,
                         width,
                         height,
-                    };
-                    self.xcap_fallback.capture_frame(&CaptureSource::Region(region))
+                    )
                 } else {
                     Err(AppError::Capture(format!(
                         "Window ID {} not found in geometry map. Try refreshing sources first.",
@@ -631,8 +628,20 @@ impl CaptureBackend for KwinCaptureBackend {
                     )))
                 }
             }
-            // Screen and region capture delegate directly to xcap.
-            _ => self.xcap_fallback.capture_frame(source),
+            CaptureSource::Region(r) => {
+                // Capture full screen via portal, then crop to the specified region.
+                debug!(
+                    "Capturing region via portal screenshot + crop ({},{} {}x{})",
+                    r.x, r.y, r.width, r.height
+                );
+                super::portal_screenshot::capture_cropped_frame(
+                    &self.runtime,
+                    r.x,
+                    r.y,
+                    r.width,
+                    r.height,
+                )
+            }
         }
     }
 }
