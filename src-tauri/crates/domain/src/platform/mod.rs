@@ -1,1 +1,2 @@
-// Placeholder — implemented in later tasks
+pub mod detect;
+pub use detect::*;

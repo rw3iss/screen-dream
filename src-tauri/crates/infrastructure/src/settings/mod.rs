@@ -1,1 +1,2 @@
-// Placeholder — implemented in later tasks
+pub mod json_repository;
+pub use json_repository::*;
