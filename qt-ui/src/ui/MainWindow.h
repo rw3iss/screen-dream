@@ -23,6 +23,12 @@ private slots:
     void onSettingsClicked();
     void onAbout();
     void onSourceSelected(const CaptureSource &source);
+    void onScreenScreenshot();
+    void onWindowScreenshot();
+    void onAreaScreenshot();
+    void onScreenRecord();
+    void onWindowRecord();
+    void onAreaRecord();
 
 private:
     void setupMenuBar();

@@ -13,6 +13,9 @@
 #include <QAction>
 #include <QStatusBar>
 #include <QMessageBox>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QApplication>
 #include <QJsonObject>
 #include <QFrame>
@@ -77,6 +80,14 @@ void MainWindow::setupCentralWidget()
     cardsLayout->addWidget(m_screenCard);
     cardsLayout->addWidget(m_windowCard);
     cardsLayout->addWidget(m_areaCard);
+
+    // Connect card buttons
+    connect(m_screenCard, &CaptureCard::screenshotClicked, this, &MainWindow::onScreenScreenshot);
+    connect(m_screenCard, &CaptureCard::recordClicked, this, &MainWindow::onScreenRecord);
+    connect(m_windowCard, &CaptureCard::screenshotClicked, this, &MainWindow::onWindowScreenshot);
+    connect(m_windowCard, &CaptureCard::recordClicked, this, &MainWindow::onWindowRecord);
+    connect(m_areaCard, &CaptureCard::screenshotClicked, this, &MainWindow::onAreaScreenshot);
+    connect(m_areaCard, &CaptureCard::recordClicked, this, &MainWindow::onAreaRecord);
 
     mainLayout->addLayout(cardsLayout, 0);  // no stretch — fixed height
 
@@ -199,4 +210,93 @@ void MainWindow::onSourceSelected(const CaptureSource &source)
 {
     delete m_selectedSource;
     m_selectedSource = new CaptureSource(source);
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot helpers
+// ---------------------------------------------------------------------------
+
+static QString screenshotOutputPath()
+{
+    QString dir = "/tmp";
+    try {
+        QJsonObject settings = AppState::instance().bridge().loadSettings();
+        QJsonObject exp = settings.value("export").toObject();
+        QString d = exp.value("output_directory").toString();
+        if (!d.isEmpty()) dir = d;
+    } catch (...) {}
+
+    QString ts = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+    return dir + "/screenshot_" + ts + ".png";
+}
+
+void MainWindow::onScreenScreenshot()
+{
+    // Use selected source if it's a screen, otherwise pick primary monitor
+    CaptureSource src;
+    if (m_selectedSource && m_selectedSource->type == CaptureSource::Screen) {
+        src = *m_selectedSource;
+    } else {
+        // Default to first (primary) monitor
+        try {
+            auto sources = AppState::instance().bridge().enumerateSources();
+            if (!sources.monitors.isEmpty()) {
+                src.type = CaptureSource::Screen;
+                src.monitorId = sources.monitors[0].id;
+            }
+        } catch (...) {}
+    }
+
+    try {
+        QString path = AppState::instance().bridge().takeScreenshot(src, screenshotOutputPath());
+        statusBar()->showMessage("Screenshot saved: " + path, 5000);
+        m_recentCaptures->refresh();
+    } catch (const std::exception &e) {
+        statusBar()->showMessage(QString("Screenshot failed: %1").arg(e.what()), 5000);
+    }
+}
+
+void MainWindow::onWindowScreenshot()
+{
+    if (!m_selectedSource || m_selectedSource->type != CaptureSource::Window) {
+        statusBar()->showMessage("Select a window first from Browse Sources", 3000);
+        return;
+    }
+    try {
+        QString path = AppState::instance().bridge().takeScreenshot(*m_selectedSource, screenshotOutputPath());
+        statusBar()->showMessage("Screenshot saved: " + path, 5000);
+        m_recentCaptures->refresh();
+    } catch (const std::exception &e) {
+        statusBar()->showMessage(QString("Screenshot failed: %1").arg(e.what()), 5000);
+    }
+}
+
+void MainWindow::onAreaScreenshot()
+{
+    if (!m_selectedSource || m_selectedSource->type != CaptureSource::Region) {
+        statusBar()->showMessage("Select an area first from Browse Sources", 3000);
+        return;
+    }
+    try {
+        QString path = AppState::instance().bridge().takeScreenshot(*m_selectedSource, screenshotOutputPath());
+        statusBar()->showMessage("Screenshot saved: " + path, 5000);
+        m_recentCaptures->refresh();
+    } catch (const std::exception &e) {
+        statusBar()->showMessage(QString("Screenshot failed: %1").arg(e.what()), 5000);
+    }
+}
+
+void MainWindow::onScreenRecord()
+{
+    statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
+}
+
+void MainWindow::onWindowRecord()
+{
+    statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
+}
+
+void MainWindow::onAreaRecord()
+{
+    statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
 }
