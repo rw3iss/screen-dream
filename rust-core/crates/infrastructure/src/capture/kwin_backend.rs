@@ -640,7 +640,18 @@ impl CaptureBackend for KwinCaptureBackend {
                 let geom_map = self.geometry_map.lock().map_err(|e| {
                     AppError::Capture(format!("Geometry map lock poisoned: {e}"))
                 })?;
+                info!(
+                    "Window capture: looking up window_id={} in geometry_map ({} entries: {:?})",
+                    w.window_id, geom_map.len(), geom_map
+                );
                 if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
+                    if width == 0 || height == 0 {
+                        return Err(AppError::Capture(format!(
+                            "Window {} has zero-size geometry ({x},{y} {width}x{height}). \
+                             The window may be minimized or not yet enumerated.",
+                            w.window_id
+                        )));
+                    }
                     debug!(
                         "Capturing window {} via PipeWire + crop ({x},{y} {width}x{height})",
                         w.window_id
