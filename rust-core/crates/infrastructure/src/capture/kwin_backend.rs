@@ -174,10 +174,18 @@ for (let i = 0; i < clients.length; i++) {
     if (c.normalWindow) {
         var cg = c.clientGeometry;
         var fg = c.frameGeometry;
+        var titlebar = cg.y - fg.y;
         var x = cg.x;
-        var y = fg.y;
+        var y = cg.y - titlebar;
         var w = cg.width;
-        var h = cg.height + (cg.y - fg.y);
+        var h = cg.height + titlebar;
+        if (c.decoration) {
+            var bl = c.decoration.borderLeft || 0;
+            var br = c.decoration.borderRight || 0;
+            var bt = c.decoration.borderTop || 0;
+            var bb = c.decoration.borderBottom || 0;
+            console.info("SD_DEC|" + c.caption.substring(0,30) + "|left=" + bl + " right=" + br + " top=" + bt + " bottom=" + bb);
+        }
         console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + x + "," + y + "," + w + "," + h + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
     }
 }
