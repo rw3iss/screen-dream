@@ -282,10 +282,11 @@ for (let i = 0; i < clients.length; i++) {
                 continue;
             }
 
-            let x: i32 = geom_parts[0].parse().unwrap_or(0);
-            let y: i32 = geom_parts[1].parse().unwrap_or(0);
-            let width: u32 = geom_parts[2].parse().unwrap_or(0);
-            let height: u32 = geom_parts[3].parse().unwrap_or(0);
+            // KWin reports fractional geometry on HiDPI — parse as f64 first, then round.
+            let x: i32 = geom_parts[0].parse::<f64>().unwrap_or(0.0).round() as i32;
+            let y: i32 = geom_parts[1].parse::<f64>().unwrap_or(0.0).round() as i32;
+            let width: u32 = geom_parts[2].parse::<f64>().unwrap_or(0.0).round() as u32;
+            let height: u32 = geom_parts[3].parse::<f64>().unwrap_or(0.0).round() as u32;
 
             let is_minimized = minimized_str == "1";
             let is_focused = active_str == "1";
@@ -649,11 +650,9 @@ impl CaptureBackend for KwinCaptureBackend {
                 );
                 if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
                     if width == 0 || height == 0 {
-                        return Err(AppError::Capture(format!(
-                            "Window {} has zero-size geometry ({x},{y} {width}x{height}). \
-                             The window may be minimized or not yet enumerated.",
-                            w.window_id
-                        )));
+                        return Err(AppError::Capture(
+                            "Cannot capture this window — it may be minimized or hidden.".to_string()
+                        ));
                     }
                     debug!(
                         "Capturing window {} via PipeWire + crop ({x},{y} {width}x{height})",
