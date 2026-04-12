@@ -423,9 +423,22 @@ fn run_pw_thread(
                     }
 
                     if let Some(slice) = spa_data.data() {
-                        let w = nw3.lock().unwrap().unwrap_or(0);
-                        let h = nh3.lock().unwrap().unwrap_or(0);
+                        let mut w = nw3.lock().unwrap().unwrap_or(0);
+                        let mut h = nh3.lock().unwrap().unwrap_or(0);
+
+                        // If portal didn't give us dimensions, try to derive from stride + size.
+                        if (w == 0 || h == 0) && chunk_stride > 0 {
+                            w = (chunk_stride / 4) as u32;
+                            h = chunk_size / chunk_stride as u32;
+                            if w > 0 && h > 0 {
+                                info!("Derived frame dimensions from buffer: {w}x{h}");
+                                *nw3.lock().unwrap() = Some(w);
+                                *nh3.lock().unwrap() = Some(h);
+                            }
+                        }
+
                         if w == 0 || h == 0 {
+                            debug!("Skipping frame: dimensions unknown (stride={chunk_stride}, size={chunk_size})");
                             return;
                         }
 
@@ -476,13 +489,60 @@ fn run_pw_thread(
             AppError::Capture(format!("Failed to register PipeWire stream listener: {e}"))
         })?;
 
+    // Build format params telling PipeWire what we can accept.
+    // Without this, PipeWire may not negotiate and the stream won't produce frames.
+    use pw::spa;
+    let obj = spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType, Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype, Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat, Choice, Enum, Id,
+            spa::param::video::VideoFormat::BGRx,
+            spa::param::video::VideoFormat::BGRx,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::RGBx,
+            spa::param::video::VideoFormat::RGBA,
+            spa::param::video::VideoFormat::RGB
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoSize, Choice, Range, Rectangle,
+            spa::utils::Rectangle { width: 1920, height: 1080 },
+            spa::utils::Rectangle { width: 1, height: 1 },
+            spa::utils::Rectangle { width: 8192, height: 8192 }
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFramerate, Choice, Range, Fraction,
+            spa::utils::Fraction { num: 30, denom: 1 },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction { num: 144, denom: 1 }
+        )
+    );
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .map_err(|e| AppError::Capture(format!("Failed to serialize PipeWire format params: {e}")))?
+    .0
+    .into_inner();
+    let mut params = [spa::pod::Pod::from_bytes(&values).unwrap()];
+
+    info!("Connecting PipeWire stream to node {node_id}");
+
     // Connect to the portal node.
     stream
         .connect(
             Direction::Input,
             Some(node_id),
             StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
-            &mut [],
+            &mut params,
         )
         .map_err(|e| {
             AppError::Capture(format!(

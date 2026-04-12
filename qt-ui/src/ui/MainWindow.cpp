@@ -67,8 +67,8 @@ void MainWindow::setupCentralWidget()
 {
     auto *central = new QWidget(this);
     auto *mainLayout = new QVBoxLayout(central);
-    mainLayout->setContentsMargins(16, 16, 16, 16);
-    mainLayout->setSpacing(16);
+    mainLayout->setContentsMargins(16, 8, 16, 8);
+    mainLayout->setSpacing(8);
 
     // --- Capture cards row (fixed height, no stretch) ---
     auto *cardsLayout = new QHBoxLayout();
