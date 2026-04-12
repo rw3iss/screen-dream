@@ -323,36 +323,55 @@ for (let i = 0; i < clients.length; i++) {
     /// Detect which monitor the PipeWire frame corresponds to by matching
     /// the frame dimensions against known monitors. Returns (scale, monitor_x, monitor_y)
     /// where monitor_x/y is the logical origin of that monitor in the virtual desktop.
+    ///
+    /// Prioritizes the primary monitor when multiple monitors have the same
+    /// scale factor (common in multi-monitor HiDPI setups).
     fn detect_monitor_mapping(&self, frame_width: u32, frame_height: u32) -> (f64, i32, i32) {
         if let Ok(monitors) = Monitor::all() {
-            for mon in &monitors {
+            // Sort: primary monitor first, then by position.
+            let mut sorted: Vec<_> = monitors.iter().collect();
+            sorted.sort_by_key(|m| if m.is_primary().unwrap_or(false) { 0 } else { 1 });
+
+            for mon in &sorted {
                 let lw = mon.width().unwrap_or(0);
                 let lh = mon.height().unwrap_or(0);
                 let mx = mon.x().unwrap_or(0);
                 let my = mon.y().unwrap_or(0);
+                let name = mon.name().unwrap_or_default();
+                let is_primary = mon.is_primary().unwrap_or(false);
                 if lw > 0 && lh > 0 {
-                    // Check both orientations (monitor may be rotated)
                     let scale_w = frame_width as f64 / lw as f64;
                     let scale_h = frame_height as f64 / lh as f64;
+                    // Check normal orientation
                     if (scale_w - scale_h).abs() < 0.2 && scale_w > 0.5 && scale_w < 5.0 {
-                        info!(
-                            "PipeWire frame {frame_width}x{frame_height} matches monitor at ({mx},{my}) {lw}x{lh}, scale={scale_w:.2}"
-                        );
-                        return (scale_w, mx, my);
-                    }
-                    // Try swapped dimensions (rotated monitor)
-                    let scale_w2 = frame_width as f64 / lh as f64;
-                    let scale_h2 = frame_height as f64 / lw as f64;
-                    if (scale_w2 - scale_h2).abs() < 0.2 && scale_w2 > 0.5 && scale_w2 < 5.0 {
-                        info!(
-                            "PipeWire frame {frame_width}x{frame_height} matches ROTATED monitor at ({mx},{my}) {lw}x{lh}, scale={scale_w2:.2}"
-                        );
-                        return (scale_w2, mx, my);
+                        // For landscape frame, only match landscape monitors (w > h)
+                        if (frame_width > frame_height) == (lw > lh) || is_primary {
+                            info!(
+                                "PipeWire frame {frame_width}x{frame_height} -> monitor '{name}' at ({mx},{my}) {lw}x{lh} scale={scale_w:.2} primary={is_primary}"
+                            );
+                            return (scale_w, mx, my);
+                        }
                     }
                 }
             }
+
+            // Fallback: use the scale from any monitor with matching scale
+            let scale = sorted.first()
+                .and_then(|m| {
+                    let s = m.scale_factor().unwrap_or(1.0) as f64;
+                    if s > 0.5 { Some(s) } else { None }
+                })
+                .unwrap_or(1.0);
+
+            // Use primary monitor's origin
+            if let Some(primary) = sorted.first() {
+                let mx = primary.x().unwrap_or(0);
+                let my = primary.y().unwrap_or(0);
+                warn!("No exact dimension match — using primary monitor origin ({mx},{my}) scale={scale:.2}");
+                return (scale, mx, my);
+            }
         }
-        warn!("Could not match PipeWire frame {frame_width}x{frame_height} to any monitor, assuming origin (0,0) scale 1.0");
+        warn!("Could not detect monitor mapping, assuming origin (0,0) scale 1.0");
         (1.0, 0, 0)
     }
 
