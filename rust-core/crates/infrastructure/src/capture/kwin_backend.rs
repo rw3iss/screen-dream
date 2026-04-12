@@ -162,12 +162,23 @@ impl KwinCaptureBackend {
             .map_err(|e| AppError::Capture(format!("D-Bus session connection failed: {e}")))?;
 
         // Write the enumeration script to a temp file.
+        // Use clientGeometry (excludes shadow) but extend up by titlebar height
+        // to include the window header. Format:
+        // SD_WIN|uuid|caption|resourceClass|desktopFile|x,y,w,h|minimized|active
+        // where x,y,w,h is clientGeometry with y pulled up to frameGeometry.y
+        // (capturing titlebar + content, but not shadow)
         let script_content = r#"
 const clients = workspace.windowList();
 for (let i = 0; i < clients.length; i++) {
     const c = clients[i];
     if (c.normalWindow) {
-        console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + c.frameGeometry.x + "," + c.frameGeometry.y + "," + c.frameGeometry.width + "," + c.frameGeometry.height + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
+        var cg = c.clientGeometry;
+        var fg = c.frameGeometry;
+        var x = cg.x;
+        var y = fg.y;
+        var w = cg.width;
+        var h = cg.height + (cg.y - fg.y);
+        console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + x + "," + y + "," + w + "," + h + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
     }
 }
 "#;
