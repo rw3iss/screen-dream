@@ -23,3 +23,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 domain = { path = "crates/domain" }
 infrastructure = { path = "crates/infrastructure" }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
