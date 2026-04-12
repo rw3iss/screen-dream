@@ -192,7 +192,7 @@ for (let i = 0; i < clients.length; i++) {
             .map_err(|e| AppError::Capture(format!("KWin script start() failed: {e}")))?;
 
         // Give KWin a moment to execute the script and flush to journal.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // Unload the script.
         let _unload_result: Result<(), _> = scripting_proxy

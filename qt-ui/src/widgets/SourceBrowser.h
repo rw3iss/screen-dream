@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QThread>
 
 #include "core/RustBridge.h"
 
@@ -19,8 +20,11 @@ class SourceBrowser : public QWidget {
 public:
     explicit SourceBrowser(QWidget *parent = nullptr);
 
-    /// Re-query sources from RustBridge and refresh the lists.
+    /// Re-query sources from RustBridge asynchronously and refresh the lists.
     void refresh();
+
+private slots:
+    void onSourcesLoaded(AvailableSources sources);
 
     /// Add a saved area to the areas list and persist to disk.
     void addSavedArea(const QString &name, uint32_t monitorId,
@@ -47,9 +51,11 @@ private:
     QString savedAreasPath() const;
 
     bool m_expanded = false;
+    bool m_loading = false;
 
     QPushButton *m_toggleBtn;
     QWidget *m_contentWidget;
+    QLabel *m_loadingLabel = nullptr;
 
     // Columns
     QListWidget *m_monitorList;

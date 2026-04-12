@@ -152,4 +152,6 @@ private:
     static void checkError(SDError *err);
 };
 
+Q_DECLARE_METATYPE(AvailableSources)
+
 #endif // RUSTBRIDGE_H

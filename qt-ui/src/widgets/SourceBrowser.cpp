@@ -11,6 +11,26 @@
 #include <QStandardPaths>
 #include <QFont>
 #include <QFrame>
+#include <QThread>
+
+// Worker that runs enumerateSources() off the main thread.
+class SourceEnumWorker : public QThread {
+    Q_OBJECT
+public:
+    using QThread::QThread;
+signals:
+    void finished(AvailableSources sources);
+protected:
+    void run() override {
+        AvailableSources result;
+        try {
+            result = AppState::instance().bridge().enumerateSources();
+        } catch (...) {
+            // Return empty on failure
+        }
+        emit finished(result);
+    }
+};
 
 // ---------------------------------------------------------------------------
 // SourceBrowser
@@ -145,12 +165,32 @@ void SourceBrowser::toggleExpanded()
 
 void SourceBrowser::refresh()
 {
-    try {
-        m_sources = AppState::instance().bridge().enumerateSources();
-    } catch (const std::exception &e) {
-        m_sources = AvailableSources{};
-    }
+    if (m_loading)
+        return;
 
+    m_loading = true;
+
+    // Show loading state in the lists
+    m_monitorList->clear();
+    m_windowList->clear();
+    auto *loadingItem = new QListWidgetItem("Loading...", m_monitorList);
+    loadingItem->setFlags(loadingItem->flags() & ~Qt::ItemIsSelectable);
+    loadingItem->setForeground(QColor("#a0a0a0"));
+    auto *loadingItem2 = new QListWidgetItem("Loading...", m_windowList);
+    loadingItem2->setFlags(loadingItem2->flags() & ~Qt::ItemIsSelectable);
+    loadingItem2->setForeground(QColor("#a0a0a0"));
+
+    // Run enumeration on a background thread
+    auto *worker = new SourceEnumWorker(this);
+    connect(worker, &SourceEnumWorker::finished, this, &SourceBrowser::onSourcesLoaded);
+    connect(worker, &SourceEnumWorker::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
+void SourceBrowser::onSourcesLoaded(AvailableSources sources)
+{
+    m_loading = false;
+    m_sources = sources;
     populateMonitors(m_sources);
     populateWindows(m_sources);
     populateAreas();
@@ -401,3 +441,6 @@ void SourceBrowser::addSavedArea(const QString &name, uint32_t monitorId,
     if (m_expanded)
         populateAreas();
 }
+
+// Required for Q_OBJECT in .cpp file
+#include "SourceBrowser.moc"
