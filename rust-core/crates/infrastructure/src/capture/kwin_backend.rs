@@ -320,6 +320,29 @@ for (let i = 0; i < clients.length; i++) {
     // -----------------------------------------------------------------------
 
     /// Get or lazily initialise the PipeWire capture stream.
+    /// Detect the scale factor by comparing xcap's reported monitor size
+    /// (logical) with the PipeWire frame size (physical).
+    fn detect_scale_factor(&self, frame_width: u32, frame_height: u32) -> f64 {
+        if let Ok(monitors) = Monitor::all() {
+            // Find a monitor whose logical size, when scaled, matches the frame size.
+            for mon in &monitors {
+                let lw = mon.width().unwrap_or(0);
+                let lh = mon.height().unwrap_or(0);
+                if lw > 0 && lh > 0 {
+                    let scale_w = frame_width as f64 / lw as f64;
+                    let scale_h = frame_height as f64 / lh as f64;
+                    // If both axes agree within tolerance, we found the scale.
+                    if (scale_w - scale_h).abs() < 0.1 && scale_w > 0.5 && scale_w < 5.0 {
+                        debug!("Detected scale factor: {scale_w:.2} (monitor {lw}x{lh} -> frame {frame_width}x{frame_height})");
+                        return scale_w;
+                    }
+                }
+            }
+        }
+        // Default: assume 1:1 (no scaling).
+        1.0
+    }
+
     fn ensure_pw_capture(
         &self,
     ) -> AppResult<std::sync::MutexGuard<'_, Option<super::pipewire_capture::PipeWireCapture>>>
@@ -651,31 +674,37 @@ impl CaptureBackend for KwinCaptureBackend {
                         ));
                     }
 
-                    // Grab the PipeWire frame and crop the window region from it.
-                    // Clamp coordinates to frame bounds — KWin may report logical
-                    // coordinates that differ from PipeWire pixel coordinates,
-                    // or the window may partially extend outside the captured area.
                     let frame = pw.grab_frame()?;
                     let fw = frame.width;
                     let fh = frame.height;
 
-                    // Clamp origin to frame bounds
-                    let cx = (x.max(0) as u32).min(fw.saturating_sub(1));
-                    let cy = (y.max(0) as u32).min(fh.saturating_sub(1));
-                    // Clamp size to remaining frame space
-                    let cw = width.min(fw.saturating_sub(cx));
-                    let ch = height.min(fh.saturating_sub(cy));
+                    // KWin reports geometry in LOGICAL pixels, but PipeWire
+                    // delivers frames in PHYSICAL pixels. Detect the scale
+                    // factor by comparing the logical monitor size (from xcap)
+                    // with the PipeWire frame size.
+                    let scale = self.detect_scale_factor(fw, fh);
+
+                    // Scale logical coordinates to physical pixels.
+                    let px = ((x as f64) * scale).round() as i32;
+                    let py = ((y as f64) * scale).round() as i32;
+                    let pw_w = ((width as f64) * scale).round() as u32;
+                    let pw_h = ((height as f64) * scale).round() as u32;
+
+                    // Clamp to frame bounds.
+                    let cx = (px.max(0) as u32).min(fw.saturating_sub(1));
+                    let cy = (py.max(0) as u32).min(fh.saturating_sub(1));
+                    let cw = pw_w.min(fw.saturating_sub(cx));
+                    let ch = pw_h.min(fh.saturating_sub(cy));
 
                     if cw == 0 || ch == 0 {
                         return Err(AppError::Capture(format!(
-                            "Window at ({x},{y} {width}x{height}) is outside the captured screen ({fw}x{fh}). \
-                             It may be on a different monitor.",
+                            "Window at ({x},{y} {width}x{height}) scale={scale} -> ({px},{py} {pw_w}x{pw_h}) \
+                             is outside the captured screen ({fw}x{fh}).",
                         )));
                     }
 
                     debug!(
-                        "Capturing window {} via PipeWire crop: requested ({x},{y} {width}x{height}), \
-                         clamped to ({cx},{cy} {cw}x{ch}) in frame {fw}x{fh}",
+                        "Window {}: logical ({x},{y} {width}x{height}) * {scale} -> physical ({cx},{cy} {cw}x{ch}) in {fw}x{fh}",
                         w.window_id
                     );
                     super::pipewire_capture::crop_frame(&frame, cx as i32, cy as i32, cw, ch)
@@ -687,11 +716,17 @@ impl CaptureBackend for KwinCaptureBackend {
                 }
             }
             CaptureSource::Region(r) => {
+                let frame = pw.grab_frame()?;
+                let scale = self.detect_scale_factor(frame.width, frame.height);
+                let px = ((r.x as f64) * scale).round() as i32;
+                let py = ((r.y as f64) * scale).round() as i32;
+                let pw_w = ((r.width as f64) * scale).round() as u32;
+                let pw_h = ((r.height as f64) * scale).round() as u32;
                 debug!(
-                    "Capturing region via PipeWire + crop ({},{} {}x{})",
+                    "Region: logical ({},{} {}x{}) * {scale} -> physical ({px},{py} {pw_w}x{pw_h})",
                     r.x, r.y, r.width, r.height
                 );
-                pw.grab_frame_cropped(r.x, r.y, r.width, r.height)
+                super::pipewire_capture::crop_frame(&frame, px, py, pw_w, pw_h)
             }
         }
     }
