@@ -186,7 +186,7 @@ for (let i = 0; i < clients.length; i++) {
         debug!("KWin script loaded with ID {}", script_id);
 
         // Get the script object and call run() on it.
-        let script_obj_path = format!("/{script_id}");
+        let script_obj_path = format!("/Scripting/Script{script_id}");
         let script_proxy = zbus::Proxy::new(
             &conn,
             "org.kde.KWin",
