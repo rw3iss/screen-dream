@@ -74,6 +74,11 @@ pub unsafe extern "C" fn sd_init(
     config_dir: *const c_char,
     error: *mut *mut SDError,
 ) -> bool {
+    // Initialize tracing (only once, ignore errors on subsequent calls).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("screen_dream=debug,infrastructure=debug,domain=debug,ffi=debug")
+        .try_init();
+
     // Already initialized — treat as success.
     if CORE.get().is_some() {
         return true;
