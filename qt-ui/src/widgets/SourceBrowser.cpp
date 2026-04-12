@@ -64,9 +64,10 @@ void SourceBrowser::setupUi()
     connect(m_toggleBtn, &QPushButton::clicked, this, &SourceBrowser::toggleExpanded);
     mainLayout->addWidget(m_toggleBtn);
 
-    // Content widget (hidden by default)
+    // Content widget (hidden by default) — expands to fill available space
     m_contentWidget = new QWidget(this);
     m_contentWidget->setVisible(false);
+    m_contentWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     auto *contentLayout = new QHBoxLayout(m_contentWidget);
     contentLayout->setContentsMargins(0, 8, 0, 0);
@@ -106,10 +107,10 @@ void SourceBrowser::setupUi()
 
     m_monitorList = new QListWidget(m_contentWidget);
     m_monitorList->setStyleSheet(listStyle);
-    m_monitorList->setMinimumHeight(120);
-    m_monitorList->setMaximumHeight(200);
+    m_monitorList->setMinimumHeight(80);
+    m_monitorList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_monitorList, &QListWidget::itemClicked, this, &SourceBrowser::onMonitorClicked);
-    screensCol->addWidget(m_monitorList);
+    screensCol->addWidget(m_monitorList, 1);
     contentLayout->addLayout(screensCol);
 
     // --- Column 2: Windows ---
@@ -121,10 +122,10 @@ void SourceBrowser::setupUi()
 
     m_windowList = new QListWidget(m_contentWidget);
     m_windowList->setStyleSheet(listStyle);
-    m_windowList->setMinimumHeight(120);
-    m_windowList->setMaximumHeight(200);
+    m_windowList->setMinimumHeight(80);
+    m_windowList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(m_windowList, &QListWidget::itemClicked, this, &SourceBrowser::onWindowClicked);
-    windowsCol->addWidget(m_windowList);
+    windowsCol->addWidget(m_windowList, 1);
     contentLayout->addLayout(windowsCol);
 
     // --- Column 3: Saved Areas ---
@@ -136,8 +137,8 @@ void SourceBrowser::setupUi()
 
     m_areaList = new QListWidget(m_contentWidget);
     m_areaList->setStyleSheet(listStyle);
-    m_areaList->setMinimumHeight(120);
-    m_areaList->setMaximumHeight(200);
+    m_areaList->setMinimumHeight(80);
+    m_areaList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_areaList->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_areaList, &QListWidget::itemClicked, this, &SourceBrowser::onAreaClicked);
     connect(m_areaList, &QListWidget::customContextMenuRequested,
@@ -146,7 +147,8 @@ void SourceBrowser::setupUi()
     contentLayout->addLayout(areasCol);
 
     m_contentWidget->setLayout(contentLayout);
-    mainLayout->addWidget(m_contentWidget);
+    mainLayout->addWidget(m_contentWidget, 1);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setLayout(mainLayout);
 }
 

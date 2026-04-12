@@ -82,7 +82,8 @@ void MainWindow::setupCentralWidget()
 
     // --- Source browser (collapsible) ---
     m_sourceBrowser = new SourceBrowser(central);
-    mainLayout->addWidget(m_sourceBrowser);
+    m_sourceBrowser->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    mainLayout->addWidget(m_sourceBrowser, 1);
     connect(m_sourceBrowser, &SourceBrowser::sourceSelected,
             this, &MainWindow::onSourceSelected);
 
