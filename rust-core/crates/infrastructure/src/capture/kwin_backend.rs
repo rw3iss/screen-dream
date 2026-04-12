@@ -185,21 +185,11 @@ for (let i = 0; i < clients.length; i++) {
 
         debug!("KWin script loaded with ID {}", script_id);
 
-        // Get the script object and call run() on it.
-        let script_obj_path = format!("/Scripting/Script{script_id}");
-        let script_proxy = zbus::Proxy::new(
-            &conn,
-            "org.kde.KWin",
-            script_obj_path.as_str(),
-            "org.kde.kwin.Script",
-        )
-        .await
-        .map_err(|e| AppError::Capture(format!("Failed to create Script proxy: {e}")))?;
-
-        let _: () = script_proxy
-            .call("run", &())
+        // Call start() on the Scripting interface itself — this runs all loaded scripts.
+        let _: () = scripting_proxy
+            .call("start", &())
             .await
-            .map_err(|e| AppError::Capture(format!("KWin script run() failed: {e}")))?;
+            .map_err(|e| AppError::Capture(format!("KWin script start() failed: {e}")))?;
 
         // Give KWin a moment to execute the script and flush to journal.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
