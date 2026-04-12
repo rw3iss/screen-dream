@@ -41,6 +41,8 @@ struct PortalSession {
     pipewire_fd: OwnedFd,
     width: Option<u32>,
     height: Option<u32>,
+    /// Position of this stream in the virtual desktop (logical coordinates).
+    position: Option<(i32, i32)>,
     restore_token: Option<String>,
 }
 
@@ -67,6 +69,9 @@ pub struct PipeWireCapture {
     running: Arc<AtomicBool>,
     /// Restore token for skipping dialog on next launch.
     restore_token: Arc<Mutex<Option<String>>>,
+    /// Position of the captured region in the virtual desktop (logical coords).
+    /// This is what the portal reports as the stream's position.
+    pub stream_position: Option<(i32, i32)>,
     /// Tokio runtime for async portal calls.
     _runtime: tokio::runtime::Runtime,
 }
@@ -140,6 +145,7 @@ impl PipeWireCapture {
             pw_thread: Some(pw_thread),
             running,
             restore_token,
+            stream_position: session.position,
             _runtime: runtime,
         })
     }
@@ -290,6 +296,13 @@ async fn open_portal_session(
         None => (None, None),
     };
 
+    // Log the stream's position in the virtual desktop (crucial for multi-monitor)
+    let position = stream.position();
+    info!(
+        "Portal stream: node_id={node_id}, size={:?}, position={:?}",
+        (width, height), position
+    );
+
     let new_token = response.restore_token().map(|s| s.to_string());
 
     let pw_fd = proxy
@@ -299,11 +312,14 @@ async fn open_portal_session(
             AppError::Capture(format!("Failed to open PipeWire remote: {e}"))
         })?;
 
+    let stream_position = position.map(|(x, y)| (x as i32, y as i32));
+
     Ok(PortalSession {
         node_id,
         pipewire_fd: pw_fd,
         width,
         height,
+        position: stream_position,
         restore_token: new_token,
     })
 }

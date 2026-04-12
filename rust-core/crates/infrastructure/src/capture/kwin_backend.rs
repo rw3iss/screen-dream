@@ -742,16 +742,22 @@ impl CaptureBackend for KwinCaptureBackend {
                     let fw = frame.width;
                     let fh = frame.height;
 
-                    // KWin reports geometry in LOGICAL desktop coordinates.
-                    // PipeWire delivers one monitor in PHYSICAL pixels.
-                    // We need to: (1) subtract the monitor's logical origin
-                    // to get coordinates relative to that monitor, then
-                    // (2) multiply by the scale factor for physical pixels.
-                    let (scale, mon_x, mon_y) = self.detect_monitor_mapping(fw, fh);
+                    // Use the portal-reported stream position (most accurate)
+                    // to convert desktop coordinates to stream-local coordinates.
+                    // Falls back to xcap monitor detection if portal didn't report position.
+                    let (stream_x, stream_y) = pw.stream_position
+                        .unwrap_or_else(|| {
+                            let (_, mx, my) = self.detect_monitor_mapping(fw, fh);
+                            (mx, my)
+                        });
+                    let scale = 1.0_f64; // PipeWire and KWin both use logical coords
 
-                    // Convert: desktop-logical -> monitor-local-logical -> physical
-                    let local_x = x - mon_x;
-                    let local_y = y - mon_y;
+                    let local_x = x - stream_x;
+                    let local_y = y - stream_y;
+
+                    info!(
+                        "Window crop: desktop=({x},{y} {width}x{height}), stream_origin=({stream_x},{stream_y}), local=({local_x},{local_y})"
+                    );
                     let px = ((local_x as f64) * scale).round() as i32;
                     let py = ((local_y as f64) * scale).round() as i32;
                     let pw_w = ((width as f64) * scale).round() as u32;
@@ -765,12 +771,12 @@ impl CaptureBackend for KwinCaptureBackend {
 
                     if cw == 0 || ch == 0 {
                         return Err(AppError::Capture(format!(
-                            "Window at ({x},{y} {width}x{height}) is not on the captured monitor (origin {mon_x},{mon_y}).",
+                            "Window at ({x},{y} {width}x{height}) is not on the captured screen (stream origin {stream_x},{stream_y}).",
                         )));
                     }
 
                     debug!(
-                        "Window {}: desktop ({x},{y} {width}x{height}) - monitor ({mon_x},{mon_y}) * {scale:.2} -> crop ({cx},{cy} {cw}x{ch}) in {fw}x{fh}",
+                        "Window {}: desktop ({x},{y} {width}x{height}) - stream ({stream_x},{stream_y}) -> crop ({cx},{cy} {cw}x{ch}) in {fw}x{fh}",
                         w.window_id
                     );
                     super::pipewire_capture::crop_frame(&frame, cx as i32, cy as i32, cw, ch)
@@ -783,18 +789,18 @@ impl CaptureBackend for KwinCaptureBackend {
             }
             CaptureSource::Region(r) => {
                 let frame = pw.grab_frame()?;
-                let (scale, mon_x, mon_y) = self.detect_monitor_mapping(frame.width, frame.height);
-                let local_x = r.x - mon_x;
-                let local_y = r.y - mon_y;
-                let px = ((local_x as f64) * scale).round() as i32;
-                let py = ((local_y as f64) * scale).round() as i32;
-                let pw_w = ((r.width as f64) * scale).round() as u32;
-                let pw_h = ((r.height as f64) * scale).round() as u32;
+                let (stream_x, stream_y) = pw.stream_position
+                    .unwrap_or_else(|| {
+                        let (_, mx, my) = self.detect_monitor_mapping(frame.width, frame.height);
+                        (mx, my)
+                    });
+                let local_x = r.x - stream_x;
+                let local_y = r.y - stream_y;
                 debug!(
-                    "Region: desktop ({},{} {}x{}) - monitor ({mon_x},{mon_y}) * {scale:.2} -> ({px},{py} {pw_w}x{pw_h})",
+                    "Region: desktop ({},{} {}x{}) - stream ({stream_x},{stream_y}) -> local ({local_x},{local_y})",
                     r.x, r.y, r.width, r.height
                 );
-                super::pipewire_capture::crop_frame(&frame, px, py, pw_w, pw_h)
+                super::pipewire_capture::crop_frame(&frame, local_x, local_y, r.width, r.height)
             }
         }
     }
