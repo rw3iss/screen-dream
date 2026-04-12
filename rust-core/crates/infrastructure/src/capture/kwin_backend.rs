@@ -320,34 +320,52 @@ for (let i = 0; i < clients.length; i++) {
     // -----------------------------------------------------------------------
 
     /// Get or lazily initialise the PipeWire capture stream.
-    /// Detect which monitor the PipeWire frame corresponds to by matching
-    /// the frame dimensions against known monitors. Returns (scale, monitor_x, monitor_y)
-    /// where monitor_x/y is the logical origin of that monitor in the virtual desktop.
+    /// Detect which monitor the PipeWire frame corresponds to.
+    /// Returns (scale, monitor_x, monitor_y) where:
+    /// - scale: ratio between PipeWire pixels and KWin logical coordinates
+    /// - monitor_x/y: the logical origin of the matched monitor
     ///
-    /// Prioritizes the primary monitor when multiple monitors have the same
-    /// scale factor (common in multi-monitor HiDPI setups).
+    /// On KDE Wayland, PipeWire typically delivers frames at LOGICAL resolution
+    /// (matching what KWin reports). So scale is usually 1.0 and we just need
+    /// to find the right monitor origin to subtract.
     fn detect_monitor_mapping(&self, frame_width: u32, frame_height: u32) -> (f64, i32, i32) {
         if let Ok(monitors) = Monitor::all() {
-            // Sort: primary monitor first, then by position.
+            // Sort: primary monitor first.
             let mut sorted: Vec<_> = monitors.iter().collect();
             sorted.sort_by_key(|m| if m.is_primary().unwrap_or(false) { 0 } else { 1 });
 
+            // First pass: exact match (PipeWire frame == monitor logical size)
             for mon in &sorted {
                 let lw = mon.width().unwrap_or(0);
                 let lh = mon.height().unwrap_or(0);
                 let mx = mon.x().unwrap_or(0);
                 let my = mon.y().unwrap_or(0);
                 let name = mon.name().unwrap_or_default();
-                let is_primary = mon.is_primary().unwrap_or(false);
+
+                // Exact match: frame size equals logical monitor size (scale = 1.0)
+                if frame_width == lw && frame_height == lh {
+                    info!(
+                        "PipeWire frame {frame_width}x{frame_height} = monitor '{name}' at ({mx},{my}) {lw}x{lh} (scale=1.0)"
+                    );
+                    return (1.0, mx, my);
+                }
+            }
+
+            // Second pass: scaled match (PipeWire frame == monitor physical size)
+            for mon in &sorted {
+                let lw = mon.width().unwrap_or(0);
+                let lh = mon.height().unwrap_or(0);
+                let mx = mon.x().unwrap_or(0);
+                let my = mon.y().unwrap_or(0);
+                let name = mon.name().unwrap_or_default();
                 if lw > 0 && lh > 0 {
                     let scale_w = frame_width as f64 / lw as f64;
                     let scale_h = frame_height as f64 / lh as f64;
-                    // Check normal orientation
-                    if (scale_w - scale_h).abs() < 0.2 && scale_w > 0.5 && scale_w < 5.0 {
-                        // For landscape frame, only match landscape monitors (w > h)
-                        if (frame_width > frame_height) == (lw > lh) || is_primary {
+                    if (scale_w - scale_h).abs() < 0.1 && scale_w > 1.01 && scale_w < 5.0 {
+                        // Only match if orientation agrees
+                        if (frame_width > frame_height) == (lw > lh) {
                             info!(
-                                "PipeWire frame {frame_width}x{frame_height} -> monitor '{name}' at ({mx},{my}) {lw}x{lh} scale={scale_w:.2} primary={is_primary}"
+                                "PipeWire frame {frame_width}x{frame_height} = monitor '{name}' at ({mx},{my}) {lw}x{lh} * {scale_w:.2}"
                             );
                             return (scale_w, mx, my);
                         }
@@ -355,20 +373,15 @@ for (let i = 0; i < clients.length; i++) {
                 }
             }
 
-            // Fallback: use the scale from any monitor with matching scale
-            let scale = sorted.first()
-                .and_then(|m| {
-                    let s = m.scale_factor().unwrap_or(1.0) as f64;
-                    if s > 0.5 { Some(s) } else { None }
-                })
-                .unwrap_or(1.0);
-
-            // Use primary monitor's origin
+            // Fallback: use primary monitor origin with scale 1.0
             if let Some(primary) = sorted.first() {
                 let mx = primary.x().unwrap_or(0);
                 let my = primary.y().unwrap_or(0);
-                warn!("No exact dimension match — using primary monitor origin ({mx},{my}) scale={scale:.2}");
-                return (scale, mx, my);
+                let name = primary.name().unwrap_or_default();
+                warn!(
+                    "No exact match for PipeWire frame {frame_width}x{frame_height}. Using primary '{name}' at ({mx},{my}), scale=1.0"
+                );
+                return (1.0, mx, my);
             }
         }
         warn!("Could not detect monitor mapping, assuming origin (0,0) scale 1.0");
