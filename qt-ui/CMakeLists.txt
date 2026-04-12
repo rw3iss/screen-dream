@@ -1,0 +1,72 @@
+cmake_minimum_required(VERSION 3.20)
+project(ScreenDream LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
+
+# --- Rust FFI library -----------------------------------------------------------
+
+set(RUST_DIR "${CMAKE_SOURCE_DIR}/../rust-core")
+
+# Choose cargo profile based on CMake build type
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CARGO_PROFILE "release")
+    set(CARGO_RELEASE_FLAG "--release")
+else()
+    set(CARGO_PROFILE "debug")
+    set(CARGO_RELEASE_FLAG "")
+endif()
+
+set(RUST_LIB_DIR "${RUST_DIR}/target/${CARGO_PROFILE}")
+set(RUST_FFI_LIB "${RUST_LIB_DIR}/libscreen_dream_ffi.so")
+
+add_custom_command(
+    OUTPUT "${RUST_FFI_LIB}"
+    COMMAND cargo build --manifest-path "${RUST_DIR}/Cargo.toml" -p ffi ${CARGO_RELEASE_FLAG}
+    COMMENT "Building Rust FFI library (${CARGO_PROFILE})"
+    VERBATIM
+)
+add_custom_target(rust_ffi ALL DEPENDS "${RUST_FFI_LIB}")
+
+# Imported shared library target for linking
+add_library(screen_dream_ffi SHARED IMPORTED)
+set_target_properties(screen_dream_ffi PROPERTIES
+    IMPORTED_LOCATION "${RUST_FFI_LIB}"
+)
+
+# --- Qt application -------------------------------------------------------------
+
+set(SOURCES
+    src/main.cpp
+    src/core/RustBridge.cpp
+    src/core/AppState.cpp
+)
+
+set(HEADERS
+    src/core/RustBridge.h
+    src/core/AppState.h
+)
+
+add_executable(ScreenDream ${SOURCES} ${HEADERS})
+add_dependencies(ScreenDream rust_ffi)
+
+target_include_directories(ScreenDream PRIVATE
+    "${RUST_DIR}/crates/ffi"       # screen_dream_ffi.h
+    "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_link_libraries(ScreenDream PRIVATE
+    Qt6::Widgets
+    Qt6::Core
+    Qt6::Gui
+    screen_dream_ffi
+)
+
+# RPATH so the binary can find libscreen_dream_ffi.so at runtime
+set_target_properties(ScreenDream PROPERTIES
+    BUILD_RPATH "${RUST_LIB_DIR}"
+    INSTALL_RPATH "${RUST_LIB_DIR}"
+)
