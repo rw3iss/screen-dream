@@ -91,6 +91,7 @@ impl XcapCaptureBackend {
                 height,
                 is_minimized,
                 is_focused: w.is_focused().map_err(|e| xcap_err("window.is_focused()", e))?,
+                uuid: None,
             });
         }
 

@@ -20,6 +20,9 @@ pub struct ScreenSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowSource {
     pub window_id: u32,
+    /// KWin window UUID (e.g. "{8aa2bfb9-...}"). Set by KWin backend, None for xcap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +59,9 @@ pub struct WindowInfo {
     pub height: u32,
     pub is_minimized: bool,
     pub is_focused: bool,
+    /// KWin window UUID (e.g. "{8aa2bfb9-...}"). Set by KWin backend, None for xcap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
 }
 
 /// All available sources the user can pick from.

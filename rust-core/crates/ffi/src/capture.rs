@@ -121,6 +121,7 @@ pub unsafe extern "C" fn sd_free_available_sources(sources: *mut SDAvailableSour
             unsafe {
                 crate::sd_free_string(w.app_name);
                 crate::sd_free_string(w.title);
+                crate::sd_free_string(w.uuid);
             }
         }
     }

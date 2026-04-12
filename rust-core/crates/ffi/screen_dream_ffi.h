@@ -63,6 +63,10 @@ typedef struct SDWindowInfo {
     uint32_t height;
     bool is_minimized;
     bool is_focused;
+    /**
+     * KWin window UUID string, or null if not available.
+     */
+    char *uuid;
 } SDWindowInfo;
 
 typedef struct SDAvailableSources {

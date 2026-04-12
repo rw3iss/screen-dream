@@ -125,6 +125,8 @@ pub struct SDWindowInfo {
     pub height: u32,
     pub is_minimized: bool,
     pub is_focused: bool,
+    /// KWin window UUID string, or null if not available.
+    pub uuid: *mut c_char,
 }
 
 impl SDWindowInfo {
@@ -138,6 +140,7 @@ impl SDWindowInfo {
             height: w.height,
             is_minimized: w.is_minimized,
             is_focused: w.is_focused,
+            uuid: w.uuid.as_deref().map(to_c_string).unwrap_or(ptr::null_mut()),
         }
     }
 }
@@ -183,6 +186,7 @@ impl SDCaptureSource {
             })),
             1 => Ok(CaptureSource::Window(WindowSource {
                 window_id: self.window_id,
+                uuid: None,
             })),
             2 => Ok(CaptureSource::Region(RegionSource {
                 monitor_id: self.monitor_id,
