@@ -75,12 +75,12 @@ pub fn detect_compositor() -> Compositor {
 // ---------------------------------------------------------------------------
 
 /// CaptureBackend implementation using KWin D-Bus APIs for window enumeration
-/// and xcap (portal-based) for frame capture.
+/// and a persistent PipeWire ScreenCast stream for frame capture.
 ///
 /// Window enumeration: KWin scripting API (`org.kde.kwin.Scripting`) — sees all
 /// native Wayland windows, not just XWayland.
-/// Frame capture: Delegated to xcap (which uses xdg-desktop-portal on Wayland)
-/// because KWin ScreenShot2 requires compositor-level authorization.
+/// Frame capture: PipeWire ScreenCast stream provides hardware-accelerated,
+/// continuous frames. Grabbed instantly from a cached buffer.
 pub struct KwinCaptureBackend {
     platform: PlatformInfo,
     runtime: tokio::runtime::Runtime,
@@ -90,6 +90,8 @@ pub struct KwinCaptureBackend {
     uuid_map: Mutex<HashMap<u32, String>>,
     /// Maps synthetic numeric window IDs to geometry (x, y, w, h).
     geometry_map: Mutex<HashMap<u32, (i32, i32, u32, u32)>>,
+    /// Persistent PipeWire capture stream (lazily initialised).
+    pw_capture: Mutex<Option<super::pipewire_capture::PipeWireCapture>>,
 }
 
 impl KwinCaptureBackend {
@@ -107,6 +109,7 @@ impl KwinCaptureBackend {
             xcap_fallback,
             uuid_map: Mutex::new(HashMap::new()),
             geometry_map: Mutex::new(HashMap::new()),
+            pw_capture: Mutex::new(None),
         })
     }
 
@@ -306,6 +309,30 @@ for (let i = 0; i < clients.length; i++) {
         }
 
         Ok(windows)
+    }
+
+    // -----------------------------------------------------------------------
+    // PipeWire capture (lazy init)
+    // -----------------------------------------------------------------------
+
+    /// Get or lazily initialise the PipeWire capture stream.
+    fn ensure_pw_capture(
+        &self,
+    ) -> AppResult<std::sync::MutexGuard<'_, Option<super::pipewire_capture::PipeWireCapture>>>
+    {
+        let mut guard = self.pw_capture.lock().map_err(|e| {
+            AppError::Capture(format!("PipeWire capture lock poisoned: {e}"))
+        })?;
+        if guard.is_none() {
+            // Use XDG config dir, falling back to ~/.config/screen-dream.
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+                .join("screen-dream");
+            info!("Lazily initialising PipeWire capture (config_dir={})", config_dir.display());
+            let capture = super::pipewire_capture::PipeWireCapture::start(&config_dir)?;
+            *guard = Some(capture);
+        }
+        Ok(guard)
     }
 
     // -----------------------------------------------------------------------
@@ -598,29 +625,27 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
+        // Ensure the PipeWire capture stream is running.
+        let pw_guard = self.ensure_pw_capture()?;
+        let pw = pw_guard.as_ref().ok_or_else(|| {
+            AppError::Capture("PipeWire capture not initialised".to_string())
+        })?;
+
         match source {
             CaptureSource::Screen(_) => {
-                // Capture full screen via xdg-desktop-portal (silent, no dialog).
-                debug!("Capturing screen via portal screenshot (silent)");
-                super::portal_screenshot::capture_full_frame(&self.runtime)
+                debug!("Capturing screen via PipeWire stream");
+                pw.grab_frame()
             }
             CaptureSource::Window(w) => {
-                // Capture full screen via portal, then crop to window geometry.
                 let geom_map = self.geometry_map.lock().map_err(|e| {
                     AppError::Capture(format!("Geometry map lock poisoned: {e}"))
                 })?;
                 if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
                     debug!(
-                        "Capturing window {} via portal screenshot + crop ({x},{y} {width}x{height})",
+                        "Capturing window {} via PipeWire + crop ({x},{y} {width}x{height})",
                         w.window_id
                     );
-                    super::portal_screenshot::capture_cropped_frame(
-                        &self.runtime,
-                        x,
-                        y,
-                        width,
-                        height,
-                    )
+                    pw.grab_frame_cropped(x, y, width, height)
                 } else {
                     Err(AppError::Capture(format!(
                         "Window ID {} not found in geometry map. Try refreshing sources first.",
@@ -629,18 +654,11 @@ impl CaptureBackend for KwinCaptureBackend {
                 }
             }
             CaptureSource::Region(r) => {
-                // Capture full screen via portal, then crop to the specified region.
                 debug!(
-                    "Capturing region via portal screenshot + crop ({},{} {}x{})",
+                    "Capturing region via PipeWire + crop ({},{} {}x{})",
                     r.x, r.y, r.width, r.height
                 );
-                super::portal_screenshot::capture_cropped_frame(
-                    &self.runtime,
-                    r.x,
-                    r.y,
-                    r.width,
-                    r.height,
-                )
+                pw.grab_frame_cropped(r.x, r.y, r.width, r.height)
             }
         }
     }
