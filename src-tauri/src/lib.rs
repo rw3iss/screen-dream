@@ -53,6 +53,13 @@ pub fn run() {
     let platform = PlatformInfo::detect();
     info!("Platform: {:?}", platform);
 
+    // Workaround: WebKitGTK GBM buffer creation fails on some GPU/driver
+    // combos when running under XWayland. Disable GPU compositing to
+    // fall back to software rendering for the WebView.
+    if platform.is_wayland() || std::env::var("GDK_BACKEND").as_deref() == Ok("x11") {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         // Plugins
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

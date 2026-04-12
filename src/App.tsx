@@ -17,7 +17,6 @@ function useRoute() {
 
 export default function App() {
   const route = useRoute();
-
   return (
     <Layout>
       {route === "#/settings" ? <SettingsPage /> : <Home />}

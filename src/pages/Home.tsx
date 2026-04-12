@@ -8,7 +8,9 @@ export default function Home() {
   const { status } = useFfmpegStatus();
 
   useEffect(() => {
-    getPlatformInfo().then(setPlatform);
+    getPlatformInfo()
+      .then(setPlatform)
+      .catch((e) => console.error("getPlatformInfo failed:", e));
   }, []);
 
   return (
