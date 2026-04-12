@@ -7,7 +7,7 @@ edition = "2021"
 domain = { path = "../domain" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["process", "io-util", "fs", "sync", "rt"] }
+tokio = { version = "1", features = ["process", "io-util", "fs", "sync", "rt", "time"] }
 dirs = "6"
 which = "7"
 tracing = "0.1"
@@ -16,6 +16,7 @@ image = "0.25"
 cpal = "0.15"
 hound = "3.5"
 bytemuck = { version = "1", features = ["derive"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
