@@ -644,21 +644,35 @@ impl CaptureBackend for KwinCaptureBackend {
                 let geom_map = self.geometry_map.lock().map_err(|e| {
                     AppError::Capture(format!("Geometry map lock poisoned: {e}"))
                 })?;
-                info!(
-                    "Window capture: looking up window_id={} in geometry_map ({} entries: {:?})",
-                    w.window_id, geom_map.len(), geom_map
-                );
                 if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
                     if width == 0 || height == 0 {
                         return Err(AppError::Capture(
                             "Cannot capture this window — it may be minimized or hidden.".to_string()
                         ));
                     }
-                    debug!(
-                        "Capturing window {} via PipeWire + crop ({x},{y} {width}x{height})",
-                        w.window_id
-                    );
-                    pw.grab_frame_cropped(x, y, width, height)
+
+                    // Check if window is within the PipeWire frame bounds.
+                    let frame = pw.grab_frame()?;
+                    let fw = frame.width as i32;
+                    let fh = frame.height as i32;
+
+                    if x >= 0 && y >= 0 && x + width as i32 <= fw && y + height as i32 <= fh {
+                        // Window is fully within the captured frame — crop it.
+                        debug!(
+                            "Capturing window {} via PipeWire crop ({x},{y} {width}x{height})",
+                            w.window_id
+                        );
+                        super::pipewire_capture::crop_frame(&frame, x, y, width, height)
+                    } else {
+                        // Window is on a different monitor or partially outside — use portal screenshot fallback.
+                        debug!(
+                            "Window {} at ({x},{y} {width}x{height}) outside PipeWire frame ({fw}x{fh}), using portal fallback",
+                            w.window_id
+                        );
+                        drop(geom_map); // release lock before portal call
+                        let full = super::portal_screenshot::capture_full_frame(&self.runtime)?;
+                        super::pipewire_capture::crop_frame(&full, x, y, width, height)
+                    }
                 } else {
                     Err(AppError::Capture(format!(
                         "Window ID {} not found in geometry map. Try refreshing sources first.",

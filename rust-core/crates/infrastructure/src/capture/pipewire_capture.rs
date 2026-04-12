@@ -245,13 +245,15 @@ async fn open_portal_session(
         AppError::Capture(format!("Failed to create ScreenCast session: {e}"))
     })?;
 
-    // Select sources: monitor + window, single source, cursor embedded.
+    // Select sources: monitor + window, allow multiple (for multi-monitor).
+    // When the user selects multiple monitors in the picker, we get a combined
+    // frame spanning the full virtual desktop.
     proxy
         .select_sources(
             &session,
             CursorMode::Embedded,
             SourceType::Monitor | SourceType::Window,
-            false,
+            true,  // multiple — allows selecting all monitors
             restore_token.as_deref(),
             PersistMode::ExplicitlyRevoked,
         )
@@ -611,7 +613,7 @@ fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Crop a CapturedFrame to the given rectangle. Coordinates are clamped.
-fn crop_frame(
+pub fn crop_frame(
     frame: &CapturedFrame,
     x: i32,
     y: i32,
