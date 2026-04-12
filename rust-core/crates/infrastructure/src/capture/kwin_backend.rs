@@ -252,7 +252,8 @@ for (let i = 0; i < clients.length; i++) {
         })?;
         geom_map.clear();
 
-        let mut next_id: u32 = 1;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         for line in output.lines() {
             let line = line.trim();
@@ -289,9 +290,11 @@ for (let i = 0; i < clients.length; i++) {
             let is_minimized = minimized_str == "1";
             let is_focused = active_str == "1";
 
-            // Assign a synthetic numeric ID and store the UUID + geometry mapping.
-            let id = next_id;
-            next_id += 1;
+            // Derive a stable numeric ID from the UUID hash so IDs don't shift
+            // when windows open/close between enumerations.
+            let mut hasher = DefaultHasher::new();
+            uuid.hash(&mut hasher);
+            let id = (hasher.finish() & 0x7FFFFFFF) as u32; // positive u32
             uuid_map.insert(id, uuid.clone());
             geom_map.insert(id, (x, y, width, height));
 
