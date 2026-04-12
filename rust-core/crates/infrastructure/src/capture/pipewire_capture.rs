@@ -532,7 +532,7 @@ fn run_pw_thread(
         ),
         spa::pod::property!(
             spa::param::format::FormatProperties::VideoSize, Choice, Range, Rectangle,
-            spa::utils::Rectangle { width: 1920, height: 1080 },
+            spa::utils::Rectangle { width: 3840, height: 2160 },  // prefer native 4K
             spa::utils::Rectangle { width: 1, height: 1 },
             spa::utils::Rectangle { width: 8192, height: 8192 }
         ),

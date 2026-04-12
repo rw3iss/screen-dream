@@ -162,18 +162,18 @@ impl KwinCaptureBackend {
             .map_err(|e| AppError::Capture(format!("D-Bus session connection failed: {e}")))?;
 
         // Write the enumeration script to a temp file.
-        // Use frameGeometry which is the window rectangle including
-        // titlebar decorations. The PipeWire composited frame also includes
-        // the window shadow around the frameGeometry, so we include it by
-        // expanding the crop slightly. This matches what the user visually
-        // sees as "the window".
+        // Report clientGeometry (content area, no shadow, no titlebar) plus
+        // the titlebar height so we can reconstruct the visible window area.
+        // Format: SD_WIN|uuid|caption|class|desktop|cx,cy,cw,ch,titlebar|min|active
         let script_content = r#"
 const clients = workspace.windowList();
 for (let i = 0; i < clients.length; i++) {
     const c = clients[i];
     if (c.normalWindow) {
+        var cg = c.clientGeometry;
         var fg = c.frameGeometry;
-        console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + fg.x + "," + fg.y + "," + fg.width + "," + fg.height + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
+        var titlebar = Math.round(cg.y - fg.y);
+        console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + cg.x + "," + cg.y + "," + cg.width + "," + cg.height + "," + titlebar + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
     }
 }
 "#;
@@ -281,18 +281,27 @@ for (let i = 0; i < clients.length; i++) {
             let minimized_str = parts[6];
             let active_str = parts[7];
 
-            // Parse geometry: x,y,w,h
+            // Parse geometry: cx,cy,cw,ch,titlebar (clientGeometry + titlebar height)
             let geom_parts: Vec<&str> = geometry_str.split(',').collect();
-            if geom_parts.len() < 4 {
-                warn!("Malformed geometry in SD_WIN line: {geometry_str}");
+            if geom_parts.len() < 5 {
+                warn!("Malformed geometry in SD_WIN line (expected 5 fields: cx,cy,cw,ch,titlebar): {geometry_str}");
                 continue;
             }
 
             // KWin reports fractional geometry on HiDPI — parse as f64 first, then round.
-            let x: i32 = geom_parts[0].parse::<f64>().unwrap_or(0.0).round() as i32;
-            let y: i32 = geom_parts[1].parse::<f64>().unwrap_or(0.0).round() as i32;
-            let width: u32 = geom_parts[2].parse::<f64>().unwrap_or(0.0).round() as u32;
-            let height: u32 = geom_parts[3].parse::<f64>().unwrap_or(0.0).round() as u32;
+            let cx: i32 = geom_parts[0].parse::<f64>().unwrap_or(0.0).round() as i32;
+            let cy: i32 = geom_parts[1].parse::<f64>().unwrap_or(0.0).round() as i32;
+            let cw: u32 = geom_parts[2].parse::<f64>().unwrap_or(0.0).round() as u32;
+            let ch: u32 = geom_parts[3].parse::<f64>().unwrap_or(0.0).round() as u32;
+            let titlebar: i32 = geom_parts[4].parse::<f64>().unwrap_or(0.0).round() as i32;
+
+            // Store geometry as: y includes titlebar, height includes titlebar
+            // This gives us the visible window (titlebar + content) without shadow.
+            let x = cx;
+            let y = cy - titlebar;
+            let width = cw;
+            let height = ch as i32 + titlebar;
+            let height = height.max(0) as u32;
 
             let is_minimized = minimized_str == "1";
             let is_focused = active_str == "1";
@@ -819,10 +828,11 @@ mod tests {
         let platform = PlatformInfo::detect();
         let backend = KwinCaptureBackend::new(platform).unwrap();
 
+        // Format: SD_WIN|uuid|caption|class|desktop|cx,cy,cw,ch,titlebar|min|active
         let output = r#"
 some random log line
-SD_WIN|{abc-123}|Firefox|firefox|org.mozilla.firefox|100,200,1920,1080|0|1
-SD_WIN|{def-456}|Terminal|org.kde.konsole|org.kde.konsole|0,0,800,600|1|0
+SD_WIN|{abc-123}|Firefox|firefox|org.mozilla.firefox|100,228,1920,1052,28|0|1
+SD_WIN|{def-456}|Terminal|org.kde.konsole|org.kde.konsole|0,28,800,572,28|1|0
 another random line
 "#;
 
@@ -832,6 +842,7 @@ another random line
         assert_eq!(windows[0].title, "Firefox");
         assert_eq!(windows[0].app_name, "firefox");
         assert_eq!(windows[0].width, 1920);
+        // height = ch(1052) + titlebar(28) = 1080
         assert_eq!(windows[0].height, 1080);
         assert!(!windows[0].is_minimized);
         assert!(windows[0].is_focused);
