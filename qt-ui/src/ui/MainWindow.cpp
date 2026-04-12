@@ -65,7 +65,7 @@ void MainWindow::setupCentralWidget()
     mainLayout->setContentsMargins(16, 16, 16, 16);
     mainLayout->setSpacing(16);
 
-    // --- Capture cards row ---
+    // --- Capture cards row (fixed height, no stretch) ---
     auto *cardsLayout = new QHBoxLayout();
     cardsLayout->setAlignment(Qt::AlignCenter);
     cardsLayout->setSpacing(20);
@@ -78,12 +78,12 @@ void MainWindow::setupCentralWidget()
     cardsLayout->addWidget(m_windowCard);
     cardsLayout->addWidget(m_areaCard);
 
-    mainLayout->addLayout(cardsLayout);
+    mainLayout->addLayout(cardsLayout, 0);  // no stretch — fixed height
 
-    // --- Source browser (collapsible) ---
+    // --- Source browser (collapsible, takes all remaining space) ---
     m_sourceBrowser = new SourceBrowser(central);
     m_sourceBrowser->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    mainLayout->addWidget(m_sourceBrowser, 1);
+    mainLayout->addWidget(m_sourceBrowser, 1);  // stretch=1 — fills remaining height
     connect(m_sourceBrowser, &SourceBrowser::sourceSelected,
             this, &MainWindow::onSourceSelected);
 
@@ -106,11 +106,13 @@ void MainWindow::setupCentralWidget()
     sepLayout->addWidget(sepLabel, 0);
     sepLayout->addWidget(rightLine, 1);
 
-    mainLayout->addLayout(sepLayout);
+    mainLayout->addLayout(sepLayout, 0);  // no stretch
 
-    // --- Recent captures ---
+    // --- Recent captures (fixed height band at bottom) ---
     m_recentCaptures = new RecentCaptures(central);
-    mainLayout->addWidget(m_recentCaptures, 1);
+    m_recentCaptures->setFixedHeight(140);
+    m_recentCaptures->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    mainLayout->addWidget(m_recentCaptures, 0);  // no stretch — stays at bottom
 
     // Load output directory from settings
     try {
