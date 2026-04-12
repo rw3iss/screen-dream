@@ -6,8 +6,9 @@
 
 use std::path::PathBuf;
 
+use domain::capture::CapturedFrame;
 use domain::error::{AppError, AppResult};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 /// Capture a screenshot via xdg-desktop-portal Screenshot with interactive=false.
@@ -281,7 +282,7 @@ pub fn capture_cropped_frame(
     y: i32,
     width: u32,
     height: u32,
-) -> AppResult<domain::capture::CapturedFrame> {
+) -> AppResult<CapturedFrame> {
     let path = portal_screenshot_silent(runtime)?;
     let frame = load_png_and_crop(&path, x, y, width, height)?;
     // Clean up the temp screenshot file (best effort).
@@ -292,4 +293,41 @@ pub fn capture_cropped_frame(
         );
     }
     Ok(frame)
+}
+
+/// Take a full native-resolution screenshot via the portal (all monitors, physical pixels).
+/// Returns the path to the screenshot file.
+pub fn portal_screenshot_to_file(runtime: &tokio::runtime::Runtime) -> AppResult<PathBuf> {
+    portal_screenshot_silent(runtime)
+}
+
+/// Take a native-resolution screenshot and return as CapturedFrame.
+/// The returned frame contains ALL monitors at physical resolution.
+pub fn portal_screenshot_full(runtime: &tokio::runtime::Runtime) -> AppResult<CapturedFrame> {
+    capture_full_frame(runtime)
+}
+
+/// Take a native-resolution screenshot, crop to a region in LOGICAL coordinates,
+/// applying the given scale factor to convert to physical pixels.
+///
+/// The portal screenshot is in physical pixels (logical * scale). This function
+/// converts the logical coordinates to physical coordinates before cropping.
+pub fn portal_screenshot_cropped(
+    runtime: &tokio::runtime::Runtime,
+    logical_x: i32,
+    logical_y: i32,
+    logical_w: u32,
+    logical_h: u32,
+    scale: f64,
+) -> AppResult<CapturedFrame> {
+    let phys_x = (logical_x as f64 * scale).round() as i32;
+    let phys_y = (logical_y as f64 * scale).round() as i32;
+    let phys_w = (logical_w as f64 * scale).round() as u32;
+    let phys_h = (logical_h as f64 * scale).round() as u32;
+
+    info!(
+        "Portal screenshot crop: logical ({logical_x},{logical_y} {logical_w}x{logical_h}) * {scale} -> physical ({phys_x},{phys_y} {phys_w}x{phys_h})"
+    );
+
+    capture_cropped_frame(runtime, phys_x, phys_y, phys_w, phys_h)
 }

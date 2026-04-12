@@ -423,6 +423,36 @@ for (let i = 0; i < clients.length; i++) {
     }
 
     // -----------------------------------------------------------------------
+    // Scale factor detection
+    // -----------------------------------------------------------------------
+
+    /// Detect the display scale factor from xcap monitors.
+    /// Returns the scale factor of the primary monitor, or the first monitor,
+    /// or 1.0 as a fallback.
+    fn detect_scale_factor(&self) -> f64 {
+        if let Ok(monitors) = Monitor::all() {
+            // Prefer primary monitor's scale factor.
+            for m in &monitors {
+                if m.is_primary().unwrap_or(false) {
+                    if let Ok(sf) = m.scale_factor() {
+                        debug!("Scale factor from primary monitor: {sf}");
+                        return sf as f64;
+                    }
+                }
+            }
+            // Fallback: first monitor.
+            if let Some(m) = monitors.first() {
+                if let Ok(sf) = m.scale_factor() {
+                    debug!("Scale factor from first monitor: {sf}");
+                    return sf as f64;
+                }
+            }
+        }
+        warn!("Could not detect scale factor, defaulting to 1.0");
+        1.0
+    }
+
+    // -----------------------------------------------------------------------
     // Frame capture via org.kde.KWin.ScreenShot2
     // -----------------------------------------------------------------------
 
@@ -712,16 +742,45 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
-        // Ensure the PipeWire capture stream is running.
-        let pw_guard = self.ensure_pw_capture()?;
-        let pw = pw_guard.as_ref().ok_or_else(|| {
-            AppError::Capture("PipeWire capture not initialised".to_string())
-        })?;
+        // Use the portal Screenshot API for full native-resolution captures.
+        // The portal captures ALL monitors at physical resolution (logical * scale).
+        // PipeWire is kept for thumbnails/previews (lower resolution, continuous stream).
+
+        // Detect the scale factor from xcap monitors.
+        let scale = self.detect_scale_factor();
 
         match source {
-            CaptureSource::Screen(_) => {
-                debug!("Capturing screen via PipeWire stream");
-                pw.grab_frame()
+            CaptureSource::Screen(s) => {
+                debug!("Capturing screen via portal Screenshot (native resolution)");
+
+                // Find the target monitor to get its logical position and size.
+                let monitors = Monitor::all().map_err(|e| {
+                    AppError::Capture(format!("Failed to enumerate monitors: {e}"))
+                })?;
+
+                let monitor = monitors
+                    .iter()
+                    .find(|m| m.id().ok() == Some(s.monitor_id))
+                    .ok_or_else(|| {
+                        AppError::Capture(format!("Monitor with ID {} not found", s.monitor_id))
+                    })?;
+
+                let logical_x = monitor.x().map_err(|e| AppError::Capture(format!("monitor.x(): {e}")))?;
+                let logical_y = monitor.y().map_err(|e| AppError::Capture(format!("monitor.y(): {e}")))?;
+                let logical_w = monitor.width().map_err(|e| AppError::Capture(format!("monitor.width(): {e}")))?;
+                let logical_h = monitor.height().map_err(|e| AppError::Capture(format!("monitor.height(): {e}")))?;
+
+                info!(
+                    "Screen capture: monitor {} at logical ({},{} {}x{}), scale={}",
+                    s.monitor_id, logical_x, logical_y, logical_w, logical_h, scale
+                );
+
+                super::portal_screenshot::portal_screenshot_cropped(
+                    &self.runtime,
+                    logical_x, logical_y,
+                    logical_w, logical_h,
+                    scale,
+                )
             }
             CaptureSource::Window(w) => {
                 let geom_map = self.geometry_map.lock().map_err(|e| {
@@ -734,59 +793,22 @@ impl CaptureBackend for KwinCaptureBackend {
                         ));
                     }
 
-                    let frame = pw.grab_frame()?;
-                    let fw = frame.width;
-                    let fh = frame.height;
-
-                    // Use the portal-reported stream position to convert
-                    // desktop coordinates to stream-local coordinates.
-                    let (stream_x, stream_y) = pw.stream_position
-                        .unwrap_or_else(|| {
-                            let (_, mx, my) = self.detect_monitor_mapping(fw, fh);
-                            (mx, my)
-                        });
-
-                    // KWin's frameGeometry includes the invisible window shadow
-                    // region. The shadow is not reported by the scripting API but
-                    // on Breeze it's typically ~64px horizontal, ~51px top, ~75px
-                    // bottom. We detect it by comparing frameGeometry to
-                    // clientGeometry in the enumeration script — the titlebar
-                    // height tells us the top shadow is zero (we already use
-                    // clientGeometry y - titlebar for y). For x, frameGeometry ==
-                    // clientGeometry so there's no shadow offset reported.
-                    //
-                    // However, the actual composited position includes the shadow.
-                    // The simplest fix: use clientGeometry coordinates (which we
-                    // now emit from the script) directly without any shadow
-                    // compensation, since clientGeometry excludes the shadow.
-                    //
-                    // The remaining offset comes from the fact that KWin's
-                    // coordinate origin for the monitor may differ from PipeWire's.
-                    // We empirically adjust by using the monitor's scale factor
-                    // as a divisor if the coordinates are scaled.
-                    let local_x = x - stream_x;
-                    let local_y = y - stream_y;
+                    // The geometry (x, y, width, height) is already in logical coordinates
+                    // with titlebar included (y = clientGeometry.y - titlebar, h = clientGeometry.h + titlebar).
+                    // The portal screenshot covers ALL monitors, so window coordinates in the
+                    // full image are simply logical_position * scale — no monitor offset subtraction needed.
 
                     info!(
-                        "Window crop: desktop=({x},{y} {width}x{height}), stream=({stream_x},{stream_y}), local=({local_x},{local_y}), frame={fw}x{fh}"
+                        "Window capture: logical ({},{} {}x{}), scale={}",
+                        x, y, width, height, scale
                     );
-                    // Clamp to frame bounds.
-                    let cx = (local_x.max(0) as u32).min(fw.saturating_sub(1));
-                    let cy = (local_y.max(0) as u32).min(fh.saturating_sub(1));
-                    let cw = width.min(fw.saturating_sub(cx));
-                    let ch = height.min(fh.saturating_sub(cy));
 
-                    if cw == 0 || ch == 0 {
-                        return Err(AppError::Capture(format!(
-                            "Window at ({x},{y} {width}x{height}) is not on the captured screen (stream origin {stream_x},{stream_y}).",
-                        )));
-                    }
-
-                    debug!(
-                        "Window {}: desktop ({x},{y} {width}x{height}) - stream ({stream_x},{stream_y}) -> crop ({cx},{cy} {cw}x{ch}) in {fw}x{fh}",
-                        w.window_id
-                    );
-                    super::pipewire_capture::crop_frame(&frame, cx as i32, cy as i32, cw, ch)
+                    super::portal_screenshot::portal_screenshot_cropped(
+                        &self.runtime,
+                        x, y,
+                        width, height,
+                        scale,
+                    )
                 } else {
                     Err(AppError::Capture(format!(
                         "Window ID {} not found in geometry map. Try refreshing sources first.",
@@ -795,19 +817,19 @@ impl CaptureBackend for KwinCaptureBackend {
                 }
             }
             CaptureSource::Region(r) => {
-                let frame = pw.grab_frame()?;
-                let (stream_x, stream_y) = pw.stream_position
-                    .unwrap_or_else(|| {
-                        let (_, mx, my) = self.detect_monitor_mapping(frame.width, frame.height);
-                        (mx, my)
-                    });
-                let local_x = r.x - stream_x;
-                let local_y = r.y - stream_y;
-                debug!(
-                    "Region: desktop ({},{} {}x{}) - stream ({stream_x},{stream_y}) -> local ({local_x},{local_y})",
-                    r.x, r.y, r.width, r.height
+                // Region coordinates are in logical space, same as window.
+                // The portal screenshot covers everything, so just scale and crop.
+                info!(
+                    "Region capture: logical ({},{} {}x{}), scale={}",
+                    r.x, r.y, r.width, r.height, scale
                 );
-                super::pipewire_capture::crop_frame(&frame, local_x, local_y, r.width, r.height)
+
+                super::portal_screenshot::portal_screenshot_cropped(
+                    &self.runtime,
+                    r.x, r.y,
+                    r.width, r.height,
+                    scale,
+                )
             }
         }
     }
