@@ -320,27 +320,40 @@ for (let i = 0; i < clients.length; i++) {
     // -----------------------------------------------------------------------
 
     /// Get or lazily initialise the PipeWire capture stream.
-    /// Detect the scale factor by comparing xcap's reported monitor size
-    /// (logical) with the PipeWire frame size (physical).
-    fn detect_scale_factor(&self, frame_width: u32, frame_height: u32) -> f64 {
+    /// Detect which monitor the PipeWire frame corresponds to by matching
+    /// the frame dimensions against known monitors. Returns (scale, monitor_x, monitor_y)
+    /// where monitor_x/y is the logical origin of that monitor in the virtual desktop.
+    fn detect_monitor_mapping(&self, frame_width: u32, frame_height: u32) -> (f64, i32, i32) {
         if let Ok(monitors) = Monitor::all() {
-            // Find a monitor whose logical size, when scaled, matches the frame size.
             for mon in &monitors {
                 let lw = mon.width().unwrap_or(0);
                 let lh = mon.height().unwrap_or(0);
+                let mx = mon.x().unwrap_or(0);
+                let my = mon.y().unwrap_or(0);
                 if lw > 0 && lh > 0 {
+                    // Check both orientations (monitor may be rotated)
                     let scale_w = frame_width as f64 / lw as f64;
                     let scale_h = frame_height as f64 / lh as f64;
-                    // If both axes agree within tolerance, we found the scale.
-                    if (scale_w - scale_h).abs() < 0.1 && scale_w > 0.5 && scale_w < 5.0 {
-                        debug!("Detected scale factor: {scale_w:.2} (monitor {lw}x{lh} -> frame {frame_width}x{frame_height})");
-                        return scale_w;
+                    if (scale_w - scale_h).abs() < 0.2 && scale_w > 0.5 && scale_w < 5.0 {
+                        info!(
+                            "PipeWire frame {frame_width}x{frame_height} matches monitor at ({mx},{my}) {lw}x{lh}, scale={scale_w:.2}"
+                        );
+                        return (scale_w, mx, my);
+                    }
+                    // Try swapped dimensions (rotated monitor)
+                    let scale_w2 = frame_width as f64 / lh as f64;
+                    let scale_h2 = frame_height as f64 / lw as f64;
+                    if (scale_w2 - scale_h2).abs() < 0.2 && scale_w2 > 0.5 && scale_w2 < 5.0 {
+                        info!(
+                            "PipeWire frame {frame_width}x{frame_height} matches ROTATED monitor at ({mx},{my}) {lw}x{lh}, scale={scale_w2:.2}"
+                        );
+                        return (scale_w2, mx, my);
                     }
                 }
             }
         }
-        // Default: assume 1:1 (no scaling).
-        1.0
+        warn!("Could not match PipeWire frame {frame_width}x{frame_height} to any monitor, assuming origin (0,0) scale 1.0");
+        (1.0, 0, 0)
     }
 
     fn ensure_pw_capture(
@@ -678,15 +691,18 @@ impl CaptureBackend for KwinCaptureBackend {
                     let fw = frame.width;
                     let fh = frame.height;
 
-                    // KWin reports geometry in LOGICAL pixels, but PipeWire
-                    // delivers frames in PHYSICAL pixels. Detect the scale
-                    // factor by comparing the logical monitor size (from xcap)
-                    // with the PipeWire frame size.
-                    let scale = self.detect_scale_factor(fw, fh);
+                    // KWin reports geometry in LOGICAL desktop coordinates.
+                    // PipeWire delivers one monitor in PHYSICAL pixels.
+                    // We need to: (1) subtract the monitor's logical origin
+                    // to get coordinates relative to that monitor, then
+                    // (2) multiply by the scale factor for physical pixels.
+                    let (scale, mon_x, mon_y) = self.detect_monitor_mapping(fw, fh);
 
-                    // Scale logical coordinates to physical pixels.
-                    let px = ((x as f64) * scale).round() as i32;
-                    let py = ((y as f64) * scale).round() as i32;
+                    // Convert: desktop-logical -> monitor-local-logical -> physical
+                    let local_x = x - mon_x;
+                    let local_y = y - mon_y;
+                    let px = ((local_x as f64) * scale).round() as i32;
+                    let py = ((local_y as f64) * scale).round() as i32;
                     let pw_w = ((width as f64) * scale).round() as u32;
                     let pw_h = ((height as f64) * scale).round() as u32;
 
@@ -698,13 +714,12 @@ impl CaptureBackend for KwinCaptureBackend {
 
                     if cw == 0 || ch == 0 {
                         return Err(AppError::Capture(format!(
-                            "Window at ({x},{y} {width}x{height}) scale={scale} -> ({px},{py} {pw_w}x{pw_h}) \
-                             is outside the captured screen ({fw}x{fh}).",
+                            "Window at ({x},{y} {width}x{height}) is not on the captured monitor (origin {mon_x},{mon_y}).",
                         )));
                     }
 
                     debug!(
-                        "Window {}: logical ({x},{y} {width}x{height}) * {scale} -> physical ({cx},{cy} {cw}x{ch}) in {fw}x{fh}",
+                        "Window {}: desktop ({x},{y} {width}x{height}) - monitor ({mon_x},{mon_y}) * {scale:.2} -> crop ({cx},{cy} {cw}x{ch}) in {fw}x{fh}",
                         w.window_id
                     );
                     super::pipewire_capture::crop_frame(&frame, cx as i32, cy as i32, cw, ch)
@@ -717,13 +732,15 @@ impl CaptureBackend for KwinCaptureBackend {
             }
             CaptureSource::Region(r) => {
                 let frame = pw.grab_frame()?;
-                let scale = self.detect_scale_factor(frame.width, frame.height);
-                let px = ((r.x as f64) * scale).round() as i32;
-                let py = ((r.y as f64) * scale).round() as i32;
+                let (scale, mon_x, mon_y) = self.detect_monitor_mapping(frame.width, frame.height);
+                let local_x = r.x - mon_x;
+                let local_y = r.y - mon_y;
+                let px = ((local_x as f64) * scale).round() as i32;
+                let py = ((local_y as f64) * scale).round() as i32;
                 let pw_w = ((r.width as f64) * scale).round() as u32;
                 let pw_h = ((r.height as f64) * scale).round() as u32;
                 debug!(
-                    "Region: logical ({},{} {}x{}) * {scale} -> physical ({px},{py} {pw_w}x{pw_h})",
+                    "Region: desktop ({},{} {}x{}) - monitor ({mon_x},{mon_y}) * {scale:.2} -> ({px},{py} {pw_w}x{pw_h})",
                     r.x, r.y, r.width, r.height
                 );
                 super::pipewire_capture::crop_frame(&frame, px, py, pw_w, pw_h)
