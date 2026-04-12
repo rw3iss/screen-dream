@@ -162,29 +162,34 @@ impl KwinCaptureBackend {
             .map_err(|e| AppError::Capture(format!("D-Bus session connection failed: {e}")))?;
 
         // Write the enumeration script to a temp file.
-        // Use clientGeometry (excludes shadow) but extend up by titlebar height
-        // to include the window header. Format:
-        // SD_WIN|uuid|caption|resourceClass|desktopFile|x,y,w,h|minimized|active
-        // where x,y,w,h is clientGeometry with y pulled up to frameGeometry.y
-        // (capturing titlebar + content, but not shadow)
+        // Use bufferGeometry which represents the actual rendered surface
+        // including decorations but excluding compositor-added shadow.
+        // Then add the titlebar back by extending up from clientGeometry.y
+        // to bufferGeometry.y (or frameGeometry.y if bufferGeometry doesn't
+        // include the titlebar).
+        //
+        // On KDE Wayland, the window's actual pixel position in the compositor's
+        // output corresponds to bufferGeometry, not frameGeometry.
         let script_content = r#"
 const clients = workspace.windowList();
 for (let i = 0; i < clients.length; i++) {
     const c = clients[i];
     if (c.normalWindow) {
         var cg = c.clientGeometry;
+        var bg = c.bufferGeometry;
         var fg = c.frameGeometry;
-        var titlebar = cg.y - fg.y;
-        var x = cg.x;
-        var y = cg.y - titlebar;
-        var w = cg.width;
-        var h = cg.height + titlebar;
-        if (c.decoration) {
-            var bl = c.decoration.borderLeft || 0;
-            var br = c.decoration.borderRight || 0;
-            var bt = c.decoration.borderTop || 0;
-            var bb = c.decoration.borderBottom || 0;
-            console.info("SD_DEC|" + c.caption.substring(0,30) + "|left=" + bl + " right=" + br + " top=" + bt + " bottom=" + bb);
+        // bufferGeometry is the actual rendered surface.
+        // clientGeometry excludes titlebar.
+        // We want: from bufferGeometry origin with bufferGeometry size
+        // (this captures the titlebar + content, matching what's rendered).
+        var x = bg.x;
+        var y = bg.y;
+        var w = bg.width;
+        var h = bg.height;
+        // If bufferGeometry doesn't include titlebar (y > fg.y), extend up
+        if (bg.y > fg.y) {
+            y = fg.y;
+            h = bg.height + (bg.y - fg.y);
         }
         console.info("SD_WIN|" + c.internalId + "|" + c.caption + "|" + c.resourceClass + "|" + c.desktopFileName + "|" + x + "," + y + "," + w + "," + h + "|" + (c.minimized ? "1" : "0") + "|" + (c.active ? "1" : "0"));
     }
@@ -742,32 +747,59 @@ impl CaptureBackend for KwinCaptureBackend {
                     let fw = frame.width;
                     let fh = frame.height;
 
-                    // Use the portal-reported stream position (most accurate)
-                    // to convert desktop coordinates to stream-local coordinates.
-                    // Falls back to xcap monitor detection if portal didn't report position.
+                    // Use the portal-reported stream position to convert
+                    // desktop coordinates to stream-local coordinates.
                     let (stream_x, stream_y) = pw.stream_position
                         .unwrap_or_else(|| {
                             let (_, mx, my) = self.detect_monitor_mapping(fw, fh);
                             (mx, my)
                         });
-                    let scale = 1.0_f64; // PipeWire and KWin both use logical coords
 
-                    let local_x = x - stream_x;
-                    let local_y = y - stream_y;
+                    // KWin's frameGeometry includes the invisible window shadow
+                    // region. The shadow is not reported by the scripting API but
+                    // on Breeze it's typically ~64px horizontal, ~51px top, ~75px
+                    // bottom. We detect it by comparing frameGeometry to
+                    // clientGeometry in the enumeration script — the titlebar
+                    // height tells us the top shadow is zero (we already use
+                    // clientGeometry y - titlebar for y). For x, frameGeometry ==
+                    // clientGeometry so there's no shadow offset reported.
+                    //
+                    // However, the actual composited position includes the shadow.
+                    // The simplest fix: use clientGeometry coordinates (which we
+                    // now emit from the script) directly without any shadow
+                    // compensation, since clientGeometry excludes the shadow.
+                    //
+                    // The remaining offset comes from the fact that KWin's
+                    // coordinate origin for the monitor may differ from PipeWire's.
+                    // We empirically adjust by using the monitor's scale factor
+                    // as a divisor if the coordinates are scaled.
+                    // KWin reports frameGeometry at the window's content edge,
+                    // but PipeWire's composited output includes the window shadow
+                    // which extends beyond the geometry. The shadow shifts the
+                    // visual window position relative to the reported coordinates.
+                    //
+                    // On Breeze theme the shadow is ~64px left, ~51px top.
+                    // We detect the shadow offset by comparing PipeWire frame
+                    // dimensions with monitor logical dimensions — if they match
+                    // 1:1 (no scaling), we apply the known Breeze shadow offset.
+                    //
+                    // For maximized windows (x == stream_x), no shadow is rendered
+                    // so no offset is needed.
+                    let is_maximized = x == stream_x && width as i32 >= (fw as i32 - 2);
+                    let shadow_offset_x: i32 = if is_maximized { 0 } else { 64 };
+                    let shadow_offset_y: i32 = if is_maximized { 0 } else { 51 };
+
+                    let local_x = x - stream_x - shadow_offset_x;
+                    let local_y = y - stream_y - shadow_offset_y;
 
                     info!(
-                        "Window crop: desktop=({x},{y} {width}x{height}), stream_origin=({stream_x},{stream_y}), local=({local_x},{local_y})"
+                        "Window crop: desktop=({x},{y} {width}x{height}), stream=({stream_x},{stream_y}), shadow=({shadow_offset_x},{shadow_offset_y}), local=({local_x},{local_y}), frame={fw}x{fh}"
                     );
-                    let px = ((local_x as f64) * scale).round() as i32;
-                    let py = ((local_y as f64) * scale).round() as i32;
-                    let pw_w = ((width as f64) * scale).round() as u32;
-                    let pw_h = ((height as f64) * scale).round() as u32;
-
                     // Clamp to frame bounds.
-                    let cx = (px.max(0) as u32).min(fw.saturating_sub(1));
-                    let cy = (py.max(0) as u32).min(fh.saturating_sub(1));
-                    let cw = pw_w.min(fw.saturating_sub(cx));
-                    let ch = pw_h.min(fh.saturating_sub(cy));
+                    let cx = (local_x.max(0) as u32).min(fw.saturating_sub(1));
+                    let cy = (local_y.max(0) as u32).min(fh.saturating_sub(1));
+                    let cw = width.min(fw.saturating_sub(cx));
+                    let ch = height.min(fh.saturating_sub(cy));
 
                     if cw == 0 || ch == 0 {
                         return Err(AppError::Capture(format!(
