@@ -651,28 +651,34 @@ impl CaptureBackend for KwinCaptureBackend {
                         ));
                     }
 
-                    // Check if window is within the PipeWire frame bounds.
+                    // Grab the PipeWire frame and crop the window region from it.
+                    // Clamp coordinates to frame bounds — KWin may report logical
+                    // coordinates that differ from PipeWire pixel coordinates,
+                    // or the window may partially extend outside the captured area.
                     let frame = pw.grab_frame()?;
-                    let fw = frame.width as i32;
-                    let fh = frame.height as i32;
+                    let fw = frame.width;
+                    let fh = frame.height;
 
-                    if x >= 0 && y >= 0 && x + width as i32 <= fw && y + height as i32 <= fh {
-                        // Window is fully within the captured frame — crop it.
-                        debug!(
-                            "Capturing window {} via PipeWire crop ({x},{y} {width}x{height})",
-                            w.window_id
-                        );
-                        super::pipewire_capture::crop_frame(&frame, x, y, width, height)
-                    } else {
-                        // Window is on a different monitor or partially outside — use portal screenshot fallback.
-                        debug!(
-                            "Window {} at ({x},{y} {width}x{height}) outside PipeWire frame ({fw}x{fh}), using portal fallback",
-                            w.window_id
-                        );
-                        drop(geom_map); // release lock before portal call
-                        let full = super::portal_screenshot::capture_full_frame(&self.runtime)?;
-                        super::pipewire_capture::crop_frame(&full, x, y, width, height)
+                    // Clamp origin to frame bounds
+                    let cx = (x.max(0) as u32).min(fw.saturating_sub(1));
+                    let cy = (y.max(0) as u32).min(fh.saturating_sub(1));
+                    // Clamp size to remaining frame space
+                    let cw = width.min(fw.saturating_sub(cx));
+                    let ch = height.min(fh.saturating_sub(cy));
+
+                    if cw == 0 || ch == 0 {
+                        return Err(AppError::Capture(format!(
+                            "Window at ({x},{y} {width}x{height}) is outside the captured screen ({fw}x{fh}). \
+                             It may be on a different monitor.",
+                        )));
                     }
+
+                    debug!(
+                        "Capturing window {} via PipeWire crop: requested ({x},{y} {width}x{height}), \
+                         clamped to ({cx},{cy} {cw}x{ch}) in frame {fw}x{fh}",
+                        w.window_id
+                    );
+                    super::pipewire_capture::crop_frame(&frame, cx as i32, cy as i32, cw, ch)
                 } else {
                     Err(AppError::Capture(format!(
                         "Window ID {} not found in geometry map. Try refreshing sources first.",
