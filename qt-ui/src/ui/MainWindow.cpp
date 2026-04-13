@@ -2,6 +2,7 @@
 #include "widgets/CaptureCard.h"
 #include "widgets/SourceBrowser.h"
 #include "widgets/RecentCaptures.h"
+#include "widgets/RegionPicker.h"
 #include "core/AppState.h"
 
 #include <QVBoxLayout>
@@ -23,6 +24,9 @@
 #include <QFrame>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QProcess>
+#include <QStandardPaths>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_selectedSource(nullptr)
@@ -287,17 +291,69 @@ void MainWindow::onWindowScreenshot()
 
 void MainWindow::onAreaScreenshot()
 {
-    if (!m_selectedSource || m_selectedSource->type != CaptureSource::Region) {
-        statusBar()->showMessage("Select an area first from Browse Sources", 3000);
+    // 1. Capture a full-desktop screenshot via RustBridge (Spectacle FullScreen)
+    //    so the user can see what they are selecting.
+    CaptureSource fullSrc;
+    fullSrc.type = CaptureSource::Screen;
+    try {
+        auto sources = AppState::instance().bridge().enumerateSources();
+        if (!sources.monitors.isEmpty())
+            fullSrc.monitorId = sources.monitors[0].id;
+    } catch (...) {}
+
+    QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    QString bgPath = tmpDir + "/screen_dream_region_bg.png";
+
+    try {
+        AppState::instance().bridge().takeScreenshot(fullSrc, bgPath);
+    } catch (const std::exception &e) {
+        statusBar()->showMessage(
+            QString("Area screenshot failed (could not capture background): %1").arg(e.what()), 5000);
         return;
     }
-    try {
-        QString path = AppState::instance().bridge().takeScreenshot(*m_selectedSource, screenshotOutputPath());
-        statusBar()->showMessage("Screenshot saved: " + path, 5000);
-        m_recentCaptures->refresh();
-    } catch (const std::exception &e) {
-        statusBar()->showMessage(QString("Screenshot failed: %1").arg(e.what()), 5000);
-    }
+
+    // 2. Hide the main window so it does not appear in the overlay
+    hide();
+
+    // 3. Show the RegionPicker overlay
+    auto *picker = new RegionPicker(bgPath);
+
+    connect(picker, &RegionPicker::regionSelected, this, [this, bgPath](QRect region) {
+        // Crop the already-captured screenshot with FFmpeg
+        QString outPath = screenshotOutputPath();
+
+        QStringList args;
+        args << "-y"
+             << "-i" << bgPath
+             << "-vf" << QString("crop=%1:%2:%3:%4")
+                             .arg(region.width())
+                             .arg(region.height())
+                             .arg(region.x())
+                             .arg(region.y())
+             << outPath;
+
+        QProcess ffmpeg;
+        ffmpeg.start("ffmpeg", args);
+        ffmpeg.waitForFinished(10000);
+
+        show();  // restore main window
+
+        if (ffmpeg.exitCode() == 0) {
+            statusBar()->showMessage("Screenshot saved: " + outPath, 5000);
+            m_recentCaptures->refresh();
+        } else {
+            QString err = QString::fromUtf8(ffmpeg.readAllStandardError()).trimmed();
+            statusBar()->showMessage("Area screenshot crop failed: " + err, 5000);
+        }
+
+        // Clean up temp file
+        QFile::remove(bgPath);
+    });
+
+    // If the user cancels (Escape), just restore the window
+    connect(picker, &QObject::destroyed, this, [this]() {
+        if (!isVisible()) show();
+    });
 }
 
 // ---------------------------------------------------------------------------

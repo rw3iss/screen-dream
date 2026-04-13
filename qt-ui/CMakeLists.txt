@@ -46,6 +46,7 @@ set(SOURCES
     src/widgets/CaptureCard.cpp
     src/widgets/RecentCaptures.cpp
     src/widgets/SourceBrowser.cpp
+    src/widgets/RegionPicker.cpp
 )
 
 set(HEADERS
@@ -55,6 +56,7 @@ set(HEADERS
     src/widgets/CaptureCard.h
     src/widgets/RecentCaptures.h
     src/widgets/SourceBrowser.h
+    src/widgets/RegionPicker.h
 )
 
 set(RESOURCES

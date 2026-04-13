@@ -13,6 +13,7 @@
 class CaptureCard;
 class RecentCaptures;
 class SourceBrowser;
+class RegionPicker;
 
 struct CaptureSource;
 struct RecordingStatus;
