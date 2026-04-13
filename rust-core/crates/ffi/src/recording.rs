@@ -138,8 +138,11 @@ pub unsafe extern "C" fn sd_start_recording(
         }
     };
 
-    // Decide whether to use the Portal recorder (Wayland) or xcap pipeline.
-    let use_portal = state.platform.is_wayland() && is_portal_available_sync();
+    // Always use the RecordingPipeline (capture_frame loop → FFmpeg).
+    // On KDE Wayland, capture_frame uses the already-running PipeWire stream
+    // (initialized eagerly at startup). The PortalRecorder opens a separate
+    // portal session which blocks and is redundant.
+    let use_portal = false;
 
     // Optionally start audio capture (shared by both paths).
     let (audio, audio_path) = if cfg.capture_microphone {

@@ -147,9 +147,9 @@ async fn ensure_spectacle_running() -> AppResult<bool> {
         return Ok(false);
     }
 
-    info!("Starting Spectacle in background mode");
+    info!("Starting Spectacle in background mode (no notification)");
     std::process::Command::new("spectacle")
-        .arg("--background")
+        .args(["--background", "--nonotify"])
         .spawn()
         .map_err(|e| AppError::Capture(format!("Failed to start spectacle --background: {e}")))?;
 

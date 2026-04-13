@@ -106,13 +106,30 @@ impl KwinCaptureBackend {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| AppError::Capture(format!("Failed to create tokio runtime: {e}")))?;
         let spectacle = super::spectacle_backend::SpectacleCapture::new()?;
+
+        // Initialize PipeWire capture eagerly so the one-time portal dialog
+        // appears at startup rather than unexpectedly during recording.
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+            .join("screen-dream");
+        let pw_capture = match super::pipewire_capture::PipeWireCapture::start(&config_dir) {
+            Ok(pw) => {
+                info!("PipeWire capture initialized eagerly");
+                Some(pw)
+            }
+            Err(e) => {
+                warn!("PipeWire capture init failed (will retry lazily): {e}");
+                None
+            }
+        };
+
         Ok(KwinCaptureBackend {
             platform,
             runtime,
             xcap_fallback,
             uuid_map: Mutex::new(HashMap::new()),
             geometry_map: Mutex::new(HashMap::new()),
-            pw_capture: Mutex::new(None),
+            pw_capture: Mutex::new(pw_capture),
             spectacle,
         })
     }
