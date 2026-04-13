@@ -5,11 +5,16 @@
 #include <QKeyEvent>
 #include <QGuiApplication>
 #include <QScreen>
-#include <QProcess>
 #include <QDir>
 #include <QCoreApplication>
 #include <QThread>
 #include <QFileInfo>
+#include <QUrl>
+#include <QTimer>
+#include <QEventLoop>
+#include <QDBusInterface>
+#include <QDBusReply>
+#include <QDBusConnection>
 #include <QDebug>
 
 RegionPicker::RegionPicker(const QString &outputPath, QWidget *parent)
@@ -146,114 +151,107 @@ void RegionPicker::keyPressEvent(QKeyEvent *event)
 
 void RegionPicker::captureAndSave()
 {
-    // Hide overlay so it's not in the screenshot
+    // Hide overlay so it doesn't appear in the screenshot
     hide();
-    // Brief delay for the overlay to disappear from the compositor
     QCoreApplication::processEvents();
-    QThread::msleep(100);
+    QThread::msleep(50); // Brief wait for compositor to remove our window
 
-    // Find the DRM helper next to the executable
-    QString helperPath = QCoreApplication::applicationDirPath() + "/drm_capture_helper";
-    bool useDrm = QFile::exists(helperPath);
+    // Use the portal Screenshot API with interactive=false — fast, silent, native resolution.
+    // Call via QDBus directly — no Rust, no Spectacle, no helper.
+    QDBusInterface portal("org.freedesktop.portal.Desktop",
+                          "/org/freedesktop/portal/desktop",
+                          "org.freedesktop.portal.Screenshot",
+                          QDBusConnection::sessionBus());
 
-    if (useDrm) {
-        // Use DRM helper: list planes to find the right one, then capture
-        // For simplicity, capture via Spectacle-less path:
-        // 1. Find which plane covers our selection
-        // 2. Capture that plane
-        // 3. Crop with FFmpeg
+    QVariantMap options;
+    options["interactive"] = false;
 
-        // List active planes
-        QProcess listProc;
-        listProc.start(helperPath, {"--list", "/dev/dri/card2"});
-        listProc.waitForFinished(3000);
-        QString listOutput = listProc.readAllStandardOutput();
-
-        // Parse first plane (primary monitor)
-        // Format: PLANE:51:CRTC:62:FB:153:SIZE:3840x2160:POS:0,0:FMT:AB4H
-        uint32_t planeId = 0;
-        for (const QString &line : listOutput.split('\n')) {
-            if (line.startsWith("PLANE:")) {
-                QStringList parts = line.split(':');
-                if (parts.size() >= 2) {
-                    planeId = parts[1].toUInt();
-                    break; // Use first plane for now
-                }
-            }
-        }
-
-        if (planeId > 0) {
-            // Capture the plane to a temp file
-            QString tmpRaw = QDir::tempPath() + "/sd_drm_raw.data";
-            QProcess capProc;
-            capProc.start(helperPath, {"/dev/dri/card2", QString::number(planeId)});
-            capProc.waitForFinished(5000);
-            QByteArray rawData = capProc.readAllStandardOutput();
-
-            if (rawData.size() > 12) {
-                // Parse header
-                uint32_t w, h, pitch;
-                memcpy(&w, rawData.data(), 4);
-                memcpy(&h, rawData.data() + 4, 4);
-                memcpy(&pitch, rawData.data() + 8, 4);
-
-                qDebug() << "DRM capture:" << w << "x" << h << "pitch:" << pitch
-                         << "data:" << rawData.size() - 12 << "bytes";
-
-                // TODO: pixel format conversion and crop
-                // For now, fall through to Spectacle
-            }
-        }
-    }
-
-    // Fallback: use Spectacle for the actual capture, FFmpeg for crop
-    // This is simple and reliable
-    QProcess spectacle;
-    spectacle.start("spectacle", {"-b", "-n", "-f", "-o",
-                     QDir::tempPath() + "/sd_region_full.png"});
-    spectacle.waitForFinished(5000);
-
-    // Wait for file to appear (Spectacle is async)
-    QString fullPath = QDir::tempPath() + "/sd_region_full.png";
-    for (int i = 0; i < 30; i++) {
-        if (QFile::exists(fullPath) && QFileInfo(fullPath).size() > 0)
-            break;
-        QThread::msleep(100);
-    }
-
-    if (!QFile::exists(fullPath)) {
-        qWarning() << "Spectacle did not produce output";
+    QDBusReply<QDBusObjectPath> reply = portal.call("Screenshot", QString(), options);
+    if (!reply.isValid()) {
+        qWarning() << "Portal Screenshot call failed:" << reply.error().message();
         emit cancelled();
         close();
         return;
     }
 
-    // Get the image dimensions to calculate scale factor
-    // Our selection is in logical screen coordinates
-    // Spectacle captures at physical resolution
-    // Scale factor = physical / logical
-    QScreen *primaryScreen = QGuiApplication::primaryScreen();
-    qreal scale = primaryScreen ? primaryScreen->devicePixelRatio() : 1.0;
+    QString requestPath = reply.value().path();
+
+    // Wait for the Response signal by polling the portal's screenshot output.
+    // The portal saves to ~/Pictures/Screenshots/ — find the newest file.
+    QDir screenshotDir(QDir::homePath() + "/Pictures/Screenshots");
+    QStringList beforeFiles = screenshotDir.entryList({"Screenshot_*.png"}, QDir::Files, QDir::Time);
+    QString beforeLatest = beforeFiles.isEmpty() ? QString() : beforeFiles.first();
+
+    // Give the portal time to process
+    bool success = false;
+    QString capturedUri;
+    for (int i = 0; i < 50; i++) { // up to 5 seconds
+        QThread::msleep(100);
+        QCoreApplication::processEvents();
+        QStringList afterFiles = screenshotDir.entryList({"Screenshot_*.png"}, QDir::Files, QDir::Time);
+        if (!afterFiles.isEmpty() && afterFiles.first() != beforeLatest) {
+            capturedUri = screenshotDir.absoluteFilePath(afterFiles.first());
+            success = true;
+            break;
+        }
+    }
+
+    if (!success || capturedUri.isEmpty()) {
+        qWarning() << "Portal screenshot failed or timed out";
+        emit cancelled();
+        close();
+        return;
+    }
+
+    QString fullPath = capturedUri;
+    if (!QFile::exists(fullPath)) {
+        qWarning() << "Portal screenshot file not found:" << fullPath;
+        emit cancelled();
+        close();
+        return;
+    }
+
+    // Load the image with Qt (fast — QImage loads PNGs quickly)
+    QImage fullImg(fullPath);
+    if (fullImg.isNull()) {
+        qWarning() << "Failed to load screenshot:" << fullPath;
+        QFile::remove(fullPath);
+        emit cancelled();
+        close();
+        return;
+    }
+
+    // Scale selection coordinates: our overlay is in logical pixels,
+    // the portal screenshot is in physical pixels.
+    QScreen *screen = QGuiApplication::primaryScreen();
+    qreal scale = screen ? screen->devicePixelRatio() : 1.0;
 
     int cx = qRound(m_selection.x() * scale);
     int cy = qRound(m_selection.y() * scale);
     int cw = qRound(m_selection.width() * scale);
     int ch = qRound(m_selection.height() * scale);
 
-    // Crop with FFmpeg
-    QProcess ffmpeg;
-    QString cropFilter = QString("crop=%1:%2:%3:%4").arg(cw).arg(ch).arg(cx).arg(cy);
-    ffmpeg.start("ffmpeg", {"-y", "-i", fullPath, "-vf", cropFilter,
-                            "-frames:v", "1", "-update", "1", m_outputPath});
-    ffmpeg.waitForFinished(10000);
+    // Clamp to image bounds
+    cx = qMax(0, qMin(cx, fullImg.width() - 1));
+    cy = qMax(0, qMin(cy, fullImg.height() - 1));
+    cw = qMin(cw, fullImg.width() - cx);
+    ch = qMin(ch, fullImg.height() - cy);
 
-    // Cleanup
+    // Crop with QImage (instant — no FFmpeg needed)
+    QImage cropped = fullImg.copy(cx, cy, cw, ch);
+
+    // Save directly
+    QDir().mkpath(QFileInfo(m_outputPath).absolutePath());
+    bool saved = cropped.save(m_outputPath, "PNG");
+
+    // Cleanup the portal's temp file
     QFile::remove(fullPath);
 
-    if (QFile::exists(m_outputPath) && QFileInfo(m_outputPath).size() > 0) {
+    if (saved) {
+        qDebug() << "Region screenshot saved:" << cropped.size() << "->" << m_outputPath;
         emit regionCaptured(m_outputPath);
     } else {
-        qWarning() << "FFmpeg crop failed";
+        qWarning() << "Failed to save cropped screenshot";
         emit cancelled();
     }
     close();
