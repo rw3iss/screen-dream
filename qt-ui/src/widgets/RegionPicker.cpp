@@ -156,7 +156,9 @@ void RegionPicker::captureAndSave()
 
     // Use Spectacle CLI for a synchronous full-screen capture.
     // -b = background (no GUI), -n = no notification, -f = full screen, -o = output path
+    fprintf(stderr, "RegionPicker: capturing full screen via spectacle CLI...\n");
     QString tempPath = QStringLiteral("/tmp/sd_region_bg.png");
+    QFile::remove(tempPath); // ensure clean state
     QProcess proc;
     proc.start(QStringLiteral("spectacle"), {"-b", "-n", "-f", "-o", tempPath});
     if (!proc.waitForFinished(5000)) {
@@ -183,25 +185,61 @@ void RegionPicker::captureAndSave()
         return;
     }
 
-    // Compute scale by comparing the Spectacle image size with our overlay size.
-    // The overlay covers the virtual desktop in logical pixels.
-    // Spectacle captures at physical (native) resolution.
-    // scale = physical / logical
-    QRect overlayGeo = geometry(); // our overlay geometry = virtual desktop in logical px
-    qreal scaleX = (qreal)fullImg.width() / overlayGeo.width();
-    qreal scaleY = (qreal)fullImg.height() / overlayGeo.height();
+    // The overlay covers ONE monitor (the one where it was shown) in logical pixels.
+    // The Spectacle image covers ALL monitors at physical (native) resolution.
+    //
+    // To map selection→physical: we need to know which monitor the overlay is on
+    // and its physical position in the Spectacle image.
+    QRect overlayGeo = geometry(); // overlay geometry in logical desktop coords
 
-    qDebug() << "RegionPicker: overlay=" << overlayGeo.size()
-             << "image=" << fullImg.size()
-             << "scaleX=" << scaleX << "scaleY=" << scaleY
-             << "selection=" << m_selection;
+    // Find which screen the overlay center is on
+    QScreen *overlayScreen = nullptr;
+    QPoint overlayCenter = overlayGeo.center();
+    for (QScreen *s : QGuiApplication::screens()) {
+        if (s->geometry().contains(overlayCenter)) {
+            overlayScreen = s;
+            break;
+        }
+    }
+    if (!overlayScreen) overlayScreen = QGuiApplication::primaryScreen();
 
-    // The selection coordinates are relative to the overlay widget (0,0 = top-left of virtual desktop).
-    // Scale them to physical pixel coordinates in the Spectacle image.
-    int cx = qRound(m_selection.x() * scaleX);
-    int cy = qRound(m_selection.y() * scaleY);
-    int cw = qRound(m_selection.width() * scaleX);
-    int ch = qRound(m_selection.height() * scaleY);
+    // The scale factor (logical → physical) is uniform: 1.5 for your setup
+    qreal scale = overlayScreen ? overlayScreen->devicePixelRatio() : 1.5;
+
+    // If devicePixelRatio returns 1.0 (common on Wayland), detect from image
+    if (scale < 1.01) {
+        // Compute from full desktop: physical width / logical bounding box width
+        QRect virtualGeo;
+        for (QScreen *s : QGuiApplication::screens())
+            virtualGeo = virtualGeo.united(s->geometry());
+        if (virtualGeo.width() > 0)
+            scale = (qreal)fullImg.width() / virtualGeo.width();
+        if (scale < 1.01) scale = 1.5; // hard fallback
+    }
+
+    // The overlay's top-left is at overlayGeo.topLeft() in logical desktop coords.
+    // Selection is relative to the overlay widget, so in desktop coords:
+    //   desktop_x = overlayGeo.x() + selection.x()
+    //   desktop_y = overlayGeo.y() + selection.y()
+    // Physical coords in Spectacle image:
+    //   phys_x = desktop_x * scale
+    //   phys_y = desktop_y * scale
+    int desktopX = overlayGeo.x() + m_selection.x();
+    int desktopY = overlayGeo.y() + m_selection.y();
+
+    int cx = qRound(desktopX * scale);
+    int cy = qRound(desktopY * scale);
+    int cw = qRound(m_selection.width() * scale);
+    int ch = qRound(m_selection.height() * scale);
+
+    fprintf(stderr, "RegionPicker: overlay=(%d,%d %dx%d) screen=%s scale=%.2f\n"
+                    "  selection=(%d,%d %dx%d) desktop=(%d,%d) physical=(%d,%d %dx%d)\n"
+                    "  image=%dx%d\n",
+            overlayGeo.x(), overlayGeo.y(), overlayGeo.width(), overlayGeo.height(),
+            overlayScreen ? overlayScreen->name().toUtf8().constData() : "?", scale,
+            m_selection.x(), m_selection.y(), m_selection.width(), m_selection.height(),
+            desktopX, desktopY, cx, cy, cw, ch,
+            fullImg.width(), fullImg.height());
 
     // Clamp to image bounds
     cx = qMax(0, qMin(cx, fullImg.width() - 1));
@@ -220,10 +258,11 @@ void RegionPicker::captureAndSave()
     QFile::remove(tempPath);
 
     if (saved) {
-        qDebug() << "Region screenshot saved:" << cropped.size() << "->" << m_outputPath;
+        fprintf(stderr, "RegionPicker: saved %dx%d crop=(%d,%d %dx%d) -> %s\n",
+                cropped.width(), cropped.height(), cx, cy, cw, ch, m_outputPath.toUtf8().constData());
         emit regionCaptured(m_outputPath);
     } else {
-        qWarning() << "Failed to save cropped screenshot";
+        fprintf(stderr, "RegionPicker: FAILED to save cropped screenshot\n");
         emit cancelled();
     }
     close();
