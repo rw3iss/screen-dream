@@ -467,8 +467,20 @@ impl DrmCaptureBackend {
                 let plane_id = *planes_ptr.add(i);
                 let plane = drmModeGetPlane(fd, plane_id);
                 if !plane.is_null() {
-                    if (*plane).fb_id != 0 && (*plane).crtc_id != 0 {
-                        active += 1;
+                    let fb_id = (*plane).fb_id;
+                    let crtc_id = (*plane).crtc_id;
+                    if fb_id != 0 && crtc_id != 0 {
+                        // Verify we can actually read this FB (handle > 0)
+                        let fb2 = drmModeGetFB2(fd, fb_id);
+                        if !fb2.is_null() {
+                            if (*fb2).handles[0] != 0 {
+                                active += 1;
+                                debug!("DRM: plane {} crtc={} fb={} -> {}x{} handle={}",
+                                    plane_id, crtc_id, fb_id,
+                                    (*fb2).width, (*fb2).height, (*fb2).handles[0]);
+                            }
+                            drmModeFreeFB2(fb2);
+                        }
                     }
                     drmModeFreePlane(plane);
                 }
