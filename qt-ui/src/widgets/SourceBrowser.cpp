@@ -189,7 +189,8 @@ void SourceBrowser::setupUi()
 
     m_contentWidget->setLayout(contentLayout);
     mainLayout->addWidget(m_contentWidget, 1);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // Start collapsed — Fixed height (just the toggle button)
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setLayout(mainLayout);
 }
 
@@ -200,9 +201,11 @@ void SourceBrowser::toggleExpanded()
 
     if (m_expanded) {
         m_toggleBtn->setText(QString::fromUtf8("\u25BC Browse Sources"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         refresh();
     } else {
         m_toggleBtn->setText(QString::fromUtf8("\u25B6 Browse Sources"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         stopThumbnailTimer();
     }
 }
