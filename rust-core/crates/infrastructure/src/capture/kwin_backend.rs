@@ -794,10 +794,40 @@ impl KwinCaptureBackend {
     /// Use this for saving screenshots to file, NOT for previews/thumbnails.
     pub fn capture_screenshot_spectacle(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
         match source {
-            CaptureSource::Screen(_) => {
-                debug!("Screenshot via Spectacle: current screen");
-                let path = self.spectacle.current_screen()?;
-                let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&path)?;
+            CaptureSource::Screen(s) => {
+                // Capture all monitors, then crop to the target monitor.
+                // CurrentScreen captures whichever screen the active window is on
+                // (which is Screen Dream itself), so we use FullScreen + crop instead.
+                let scale = self.detect_scale_factor();
+                debug!("Screenshot via Spectacle: full screen, crop to monitor {}", s.monitor_id);
+
+                let path = self.spectacle.full_screen()?;
+
+                // Find the target monitor's position and size
+                let monitors = Monitor::all().map_err(|e| {
+                    AppError::Capture(format!("Failed to enumerate monitors: {e}"))
+                })?;
+                let monitor = monitors.iter()
+                    .find(|m| m.id().unwrap_or(0) == s.monitor_id)
+                    .or_else(|| monitors.iter().find(|m| m.is_primary().unwrap_or(false)))
+                    .ok_or_else(|| AppError::Capture("No monitors found".to_string()))?;
+
+                let mx = monitor.x().unwrap_or(0);
+                let my = monitor.y().unwrap_or(0);
+                let mw = monitor.width().unwrap_or(0);
+                let mh = monitor.height().unwrap_or(0);
+
+                // Scale logical coordinates to physical
+                let phys_x = (mx as f64 * scale).round() as i32;
+                let phys_y = (my as f64 * scale).round() as i32;
+                let phys_w = (mw as f64 * scale).round() as u32;
+                let phys_h = (mh as f64 * scale).round() as u32;
+
+                debug!("Monitor {} at logical ({mx},{my} {mw}x{mh}) -> physical ({phys_x},{phys_y} {phys_w}x{phys_h})", s.monitor_id);
+
+                let frame = super::portal_screenshot::load_png_and_crop(
+                    &path, phys_x, phys_y, phys_w, phys_h
+                )?;
                 let _ = std::fs::remove_file(&path);
                 Ok(frame)
             }
