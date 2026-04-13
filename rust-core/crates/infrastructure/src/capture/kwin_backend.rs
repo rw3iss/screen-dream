@@ -746,83 +746,88 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
-        // Use Spectacle D-Bus for native-resolution captures.
-        // Spectacle captures at full 4K native resolution without portal popups.
-        // PipeWire is kept for thumbnails/previews (lower resolution, continuous stream).
+        // capture_frame uses PipeWire for fast, lightweight preview/thumbnail capture.
+        // For final screenshots (saved to file), use capture_screenshot_spectacle() instead.
+        let pw_guard = self.ensure_pw_capture()?;
+        let pw = pw_guard.as_ref().ok_or_else(|| {
+            AppError::Capture("PipeWire capture not initialised".to_string())
+        })?;
 
         match source {
-            CaptureSource::Screen(_s) => {
-                debug!("Capturing current screen via Spectacle D-Bus (native resolution)");
+            CaptureSource::Screen(_) => {
+                debug!("Capturing screen via PipeWire stream (preview)");
+                pw.grab_frame()
+            }
+            CaptureSource::Window(w) => {
+                let geom_map = self.geometry_map.lock().map_err(|e| {
+                    AppError::Capture(format!("Geometry map lock poisoned: {e}"))
+                })?;
+                if let Some(&(x, y, width, height)) = geom_map.get(&w.window_id) {
+                    if width == 0 || height == 0 {
+                        return Err(AppError::Capture(
+                            "Cannot capture this window — it may be minimized or hidden.".to_string()
+                        ));
+                    }
+                    let (stream_x, stream_y) = pw.stream_position.unwrap_or((0, 0));
+                    let local_x = x - stream_x;
+                    let local_y = y - stream_y;
+                    pw.grab_frame_cropped(local_x, local_y, width, height)
+                } else {
+                    Err(AppError::Capture(format!(
+                        "Window ID {} not found. Refresh sources first.", w.window_id
+                    )))
+                }
+            }
+            CaptureSource::Region(r) => {
+                let (stream_x, stream_y) = pw.stream_position.unwrap_or((0, 0));
+                let local_x = r.x - stream_x;
+                let local_y = r.y - stream_y;
+                debug!("Capturing region via PipeWire (preview)");
+                pw.grab_frame_cropped(local_x, local_y, r.width, r.height)
+            }
+        }
+    }
+}
 
+impl KwinCaptureBackend {
+    /// Take a high-quality screenshot using Spectacle D-Bus (native 4K resolution).
+    /// Use this for saving screenshots to file, NOT for previews/thumbnails.
+    pub fn capture_screenshot_spectacle(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
+        match source {
+            CaptureSource::Screen(_) => {
+                debug!("Screenshot via Spectacle: current screen");
                 let path = self.spectacle.current_screen()?;
                 let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&path)?;
-
-                // Clean up the screenshot file (best effort).
-                if let Err(e) = std::fs::remove_file(&path) {
-                    warn!("Failed to remove Spectacle screenshot file '{}': {e}", path.display());
-                }
-
+                let _ = std::fs::remove_file(&path);
                 Ok(frame)
             }
             CaptureSource::Window(w) => {
-                // Resolve the KWin UUID for the target window.
                 let uuid = if let Some(ref uuid) = w.uuid {
                     uuid.clone()
                 } else {
                     let map = self.uuid_map.lock().map_err(|e| {
                         AppError::Capture(format!("UUID map lock poisoned: {e}"))
                     })?;
-                    map.get(&w.window_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            AppError::Capture(format!(
-                                "No KWin UUID found for window ID {}. Call enumerate_sources first.",
-                                w.window_id
-                            ))
-                        })?
+                    map.get(&w.window_id).cloned().ok_or_else(|| {
+                        AppError::Capture(format!("No UUID for window {}. Refresh sources.", w.window_id))
+                    })?
                 };
-
-                debug!("Capturing window {uuid} via Spectacle D-Bus (native resolution)");
-
+                debug!("Screenshot via Spectacle: window {uuid}");
                 let path = self.spectacle.capture_window(&uuid)?;
                 let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&path)?;
-
-                // Clean up the screenshot file (best effort).
-                if let Err(e) = std::fs::remove_file(&path) {
-                    warn!("Failed to remove Spectacle screenshot file '{}': {e}", path.display());
-                }
-
+                let _ = std::fs::remove_file(&path);
                 Ok(frame)
             }
             CaptureSource::Region(r) => {
-                // Region coordinates are in logical space.
-                // Spectacle captures at native resolution (physical pixels), so we need
-                // to scale logical coordinates by the display scale factor before cropping.
                 let scale = self.detect_scale_factor();
-
-                info!(
-                    "Region capture via Spectacle: logical ({},{} {}x{}), scale={}",
-                    r.x, r.y, r.width, r.height, scale
-                );
-
-                // Capture full screen at native resolution.
+                debug!("Screenshot via Spectacle: region ({},{} {}x{}) scale={scale}", r.x, r.y, r.width, r.height);
                 let path = self.spectacle.full_screen()?;
-
-                // Scale logical coordinates to physical pixels for cropping.
                 let phys_x = (r.x as f64 * scale).round() as i32;
                 let phys_y = (r.y as f64 * scale).round() as i32;
                 let phys_w = (r.width as f64 * scale).round() as u32;
                 let phys_h = (r.height as f64 * scale).round() as u32;
-
-                let frame = super::portal_screenshot::load_png_and_crop(
-                    &path, phys_x, phys_y, phys_w, phys_h,
-                )?;
-
-                // Clean up the screenshot file (best effort).
-                if let Err(e) = std::fs::remove_file(&path) {
-                    warn!("Failed to remove Spectacle screenshot file '{}': {e}", path.display());
-                }
-
+                let frame = super::portal_screenshot::load_png_and_crop(&path, phys_x, phys_y, phys_w, phys_h)?;
+                let _ = std::fs::remove_file(&path);
                 Ok(frame)
             }
         }

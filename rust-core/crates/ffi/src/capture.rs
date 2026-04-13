@@ -266,11 +266,25 @@ pub unsafe extern "C" fn sd_take_screenshot(
     let path = std::path::Path::new(&path_str);
 
     let state = core();
-    match infrastructure::capture::capture_screenshot(
-        state.capture.as_ref(),
-        &domain_source,
-        path,
-    ) {
+
+    // Use Spectacle for native-resolution screenshots on KDE.
+    // Falls back to PipeWire-based capture on other compositors.
+    let result = if let Some(ref kwin) = state.kwin_capture {
+        kwin.capture_screenshot_spectacle(&domain_source)
+            .and_then(|frame| {
+                let fmt = infrastructure::capture::screenshot::ScreenshotFormat::from_extension(path)?;
+                infrastructure::capture::screenshot::save_frame_to_file(&frame, path, fmt)?;
+                Ok(path.to_path_buf())
+            })
+    } else {
+        infrastructure::capture::capture_screenshot(
+            state.capture.as_ref(),
+            &domain_source,
+            path,
+        )
+    };
+
+    match result {
         Ok(_) => true,
         Err(e) => {
             if !error.is_null() {

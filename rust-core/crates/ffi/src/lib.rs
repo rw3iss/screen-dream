@@ -37,6 +37,8 @@ pub struct CoreState {
     pub ffmpeg: Arc<dyn FfmpegProvider>,
     pub settings: Arc<dyn SettingsRepository>,
     pub capture: Arc<dyn CaptureBackend>,
+    /// KWin backend reference (if on KDE) for Spectacle-based screenshots.
+    pub kwin_capture: Option<Arc<KwinCaptureBackend>>,
     pub platform: PlatformInfo,
 }
 
@@ -112,6 +114,8 @@ pub unsafe extern "C" fn sd_init(
 
     // Smart backend selection: use KWin D-Bus backend on KDE Wayland,
     // fall back to xcap for X11 or non-KDE compositors.
+    let mut kwin_capture: Option<Arc<KwinCaptureBackend>> = None;
+
     let capture: Arc<dyn CaptureBackend> = if platform.is_wayland() {
         let compositor = detect_compositor();
         tracing::info!("Detected compositor: {:?}", compositor);
@@ -119,7 +123,9 @@ pub unsafe extern "C" fn sd_init(
             match KwinCaptureBackend::new(platform.clone()) {
                 Ok(backend) => {
                     tracing::info!("Using KWin D-Bus capture backend");
-                    Arc::new(backend)
+                    let arc = Arc::new(backend);
+                    kwin_capture = Some(arc.clone());
+                    arc
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -141,6 +147,7 @@ pub unsafe extern "C" fn sd_init(
         ffmpeg,
         settings,
         capture,
+        kwin_capture,
         platform,
     };
 

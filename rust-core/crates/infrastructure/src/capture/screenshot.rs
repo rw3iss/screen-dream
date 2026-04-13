@@ -101,7 +101,7 @@ pub fn capture_screenshot_as_base64_png(
 }
 
 /// Save a CapturedFrame to a file in the given format.
-fn save_frame_to_file(
+pub fn save_frame_to_file(
     frame: &CapturedFrame,
     path: &Path,
     format: ScreenshotFormat,
