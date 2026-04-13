@@ -203,19 +203,15 @@ void RegionPicker::captureAndSave()
     }
     if (!overlayScreen) overlayScreen = QGuiApplication::primaryScreen();
 
-    // The scale factor (logical → physical) is uniform: 1.5 for your setup
-    qreal scale = overlayScreen ? overlayScreen->devicePixelRatio() : 1.5;
+    // Compute scale from the full virtual desktop size vs Spectacle image size.
+    // devicePixelRatio() is unreliable on Wayland (returns 2.0 when actual is 1.5).
+    QRect virtualGeo;
+    for (QScreen *s : QGuiApplication::screens())
+        virtualGeo = virtualGeo.united(s->geometry());
 
-    // If devicePixelRatio returns 1.0 (common on Wayland), detect from image
-    if (scale < 1.01) {
-        // Compute from full desktop: physical width / logical bounding box width
-        QRect virtualGeo;
-        for (QScreen *s : QGuiApplication::screens())
-            virtualGeo = virtualGeo.united(s->geometry());
-        if (virtualGeo.width() > 0)
-            scale = (qreal)fullImg.width() / virtualGeo.width();
-        if (scale < 1.01) scale = 1.5; // hard fallback
-    }
+    qreal scale = 1.5; // fallback
+    if (virtualGeo.width() > 0)
+        scale = (qreal)fullImg.width() / virtualGeo.width();
 
     // The overlay's top-left is at overlayGeo.topLeft() in logical desktop coords.
     // Selection is relative to the overlay widget, so in desktop coords:
