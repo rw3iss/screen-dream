@@ -21,6 +21,8 @@
 #include <QClipboard>
 #include <QJsonObject>
 #include <QFrame>
+#include <QTimer>
+#include <QElapsedTimer>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_selectedSource(nullptr)
@@ -32,6 +34,15 @@ MainWindow::MainWindow(QWidget *parent)
     setupMenuBar();
     setupCentralWidget();
     setupStatusBar();
+
+    // Recording elapsed-time timer (fires every second while recording)
+    m_recordingTimer = new QTimer(this);
+    m_recordingTimer->setInterval(1000);
+    connect(m_recordingTimer, &QTimer::timeout, this, &MainWindow::onRecordingTimerTick);
+
+    // Listen for recording state changes from AppState
+    connect(&AppState::instance(), &AppState::recordingStateChanged,
+            this, &MainWindow::onRecordingStateChanged);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +180,12 @@ void MainWindow::setupStatusBar()
     connect(m_copyStatusBtn, &QPushButton::clicked, this, &MainWindow::onCopyStatusMessage);
     sb->addWidget(m_copyStatusBtn);
 
+    // Recording elapsed time label (hidden by default)
+    m_recordingTimeLabel = new QLabel(this);
+    m_recordingTimeLabel->setStyleSheet("color: #e94560; font-size: 12px; font-weight: bold;");
+    m_recordingTimeLabel->setVisible(false);
+    sb->addWidget(m_recordingTimeLabel);
+
     // Show/hide copy button when status bar message changes
     connect(sb, &QStatusBar::messageChanged, this, &MainWindow::onStatusMessageChanged);
 
@@ -283,19 +300,149 @@ void MainWindow::onAreaScreenshot()
     }
 }
 
+// ---------------------------------------------------------------------------
+// Recording helpers
+// ---------------------------------------------------------------------------
+
+static QString recordingOutputPath()
+{
+    QString dir = QDir::homePath() + "/Pictures";
+    try {
+        QJsonObject settings = AppState::instance().bridge().loadSettings();
+        QJsonObject exp = settings.value("export").toObject();
+        QString d = exp.value("output_directory").toString();
+        if (!d.isEmpty()) dir = d;
+    } catch (...) {}
+    QDir().mkpath(dir);
+
+    QString ts = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+    return dir + "/recording_" + ts + ".mp4";
+}
+
+void MainWindow::setAllCardsRecordingState(bool recording)
+{
+    m_screenCard->setRecordingState(recording);
+    m_windowCard->setRecordingState(recording);
+    m_areaCard->setRecordingState(recording);
+}
+
+void MainWindow::startRecording(const CaptureSource &source)
+{
+    RecordingConfig config;
+    config.source = source;
+    config.fps = 30;
+    config.videoCodec = QStringLiteral("libx264");
+    config.crf = 23;
+    config.preset = QStringLiteral("ultrafast");
+    config.outputPath = recordingOutputPath();
+    config.captureMicrophone = false;
+
+    try {
+        AppState::instance().startRecording(config);
+        m_isRecording = true;
+        setAllCardsRecordingState(true);
+        m_recordingElapsed.start();
+        m_recordingTimeLabel->setText("REC 00:00");
+        m_recordingTimeLabel->setVisible(true);
+        m_recordingTimer->start();
+        statusBar()->showMessage("Recording started...", 2000);
+    } catch (const std::exception &e) {
+        statusBar()->showMessage(QString("Recording failed: %1").arg(e.what()), 5000);
+    }
+}
+
+void MainWindow::stopRecording()
+{
+    m_recordingTimer->stop();
+    m_recordingTimeLabel->setVisible(false);
+
+    try {
+        QString path = AppState::instance().stopRecording();
+        m_isRecording = false;
+        setAllCardsRecordingState(false);
+        statusBar()->showMessage("Recording saved: " + path, 8000);
+        m_recentCaptures->refresh();
+    } catch (const std::exception &e) {
+        m_isRecording = false;
+        setAllCardsRecordingState(false);
+        statusBar()->showMessage(QString("Stop recording failed: %1").arg(e.what()), 5000);
+    }
+}
+
 void MainWindow::onScreenRecord()
 {
-    statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
+    if (m_isRecording) {
+        stopRecording();
+        return;
+    }
+
+    // Use selected source if it's a screen, otherwise pick primary monitor
+    CaptureSource src;
+    if (m_selectedSource && m_selectedSource->type == CaptureSource::Screen) {
+        src = *m_selectedSource;
+    } else {
+        try {
+            auto sources = AppState::instance().bridge().enumerateSources();
+            if (!sources.monitors.isEmpty()) {
+                src.type = CaptureSource::Screen;
+                src.monitorId = sources.monitors[0].id;
+            }
+        } catch (...) {}
+    }
+
+    startRecording(src);
 }
 
 void MainWindow::onWindowRecord()
 {
-    statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
+    if (m_isRecording) {
+        stopRecording();
+        return;
+    }
+
+    if (!m_selectedSource || m_selectedSource->type != CaptureSource::Window) {
+        statusBar()->showMessage("Select a window first from Browse Sources", 3000);
+        return;
+    }
+
+    startRecording(*m_selectedSource);
 }
 
 void MainWindow::onAreaRecord()
 {
-    statusBar()->showMessage("Recording will be implemented in the next phase", 3000);
+    if (m_isRecording) {
+        stopRecording();
+        return;
+    }
+
+    if (!m_selectedSource || m_selectedSource->type != CaptureSource::Region) {
+        statusBar()->showMessage("Select an area first from Browse Sources", 3000);
+        return;
+    }
+
+    startRecording(*m_selectedSource);
+}
+
+void MainWindow::onRecordingStateChanged(const RecordingStatus &status)
+{
+    if (status.state == RecordingStatus::Failed) {
+        m_recordingTimer->stop();
+        m_recordingTimeLabel->setVisible(false);
+        m_isRecording = false;
+        setAllCardsRecordingState(false);
+        statusBar()->showMessage("Recording failed unexpectedly", 5000);
+    }
+}
+
+void MainWindow::onRecordingTimerTick()
+{
+    qint64 ms = m_recordingElapsed.elapsed();
+    int totalSecs = static_cast<int>(ms / 1000);
+    int mins = totalSecs / 60;
+    int secs = totalSecs % 60;
+    m_recordingTimeLabel->setText(QString("REC %1:%2")
+        .arg(mins, 2, 10, QChar('0'))
+        .arg(secs, 2, 10, QChar('0')));
 }
 
 void MainWindow::onStatusMessageChanged(const QString &message)

@@ -14,6 +14,9 @@ public:
 
     explicit CaptureCard(CaptureType type, QWidget *parent = nullptr);
 
+    /// Update the Record button appearance for recording state.
+    void setRecordingState(bool recording);
+
 signals:
     void screenshotClicked();
     void recordClicked();

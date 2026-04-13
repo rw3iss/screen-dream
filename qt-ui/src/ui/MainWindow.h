@@ -7,12 +7,15 @@
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QString>
+#include <QTimer>
+#include <QElapsedTimer>
 
 class CaptureCard;
 class RecentCaptures;
 class SourceBrowser;
 
 struct CaptureSource;
+struct RecordingStatus;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -30,6 +33,8 @@ private slots:
     void onScreenRecord();
     void onWindowRecord();
     void onAreaRecord();
+    void onRecordingStateChanged(const RecordingStatus &status);
+    void onRecordingTimerTick();
     void onStatusMessageChanged(const QString &message);
     void onCopyStatusMessage();
 
@@ -37,6 +42,13 @@ private:
     void setupMenuBar();
     void setupCentralWidget();
     void setupStatusBar();
+
+    /// Start recording with the given source. Shared by all three Record buttons.
+    void startRecording(const CaptureSource &source);
+    /// Stop the current recording.
+    void stopRecording();
+    /// Update all card buttons to reflect recording state.
+    void setAllCardsRecordingState(bool recording);
 
     // Capture cards
     CaptureCard *m_screenCard;
@@ -58,6 +70,12 @@ private:
     QLabel *m_platformLabel;
     QPushButton *m_copyStatusBtn;
     QString m_lastStatusMessage;
+
+    // Recording state
+    bool m_isRecording = false;
+    QTimer *m_recordingTimer = nullptr;
+    QElapsedTimer m_recordingElapsed;
+    QLabel *m_recordingTimeLabel = nullptr;
 };
 
 #endif // MAINWINDOW_H

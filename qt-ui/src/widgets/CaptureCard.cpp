@@ -105,6 +105,27 @@ void CaptureCard::setupUi()
     connect(m_recordBtn, &QPushButton::clicked, this, &CaptureCard::recordClicked);
 }
 
+void CaptureCard::setRecordingState(bool recording)
+{
+    if (recording) {
+        m_recordBtn->setText("Stop");
+        m_recordBtn->setToolTip("Stop recording");
+        m_recordBtn->setStyleSheet(
+            "QPushButton { background-color: #cc0000; color: #ffffff; border: 1px solid #cc0000; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #ee2222; border-color: #ee2222; }"
+            "QPushButton:pressed { background-color: #aa0000; }"
+        );
+    } else {
+        m_recordBtn->setText("Record");
+        m_recordBtn->setToolTip("Start recording");
+        m_recordBtn->setStyleSheet(
+            "QPushButton { background-color: #e94560; color: #ffffff; border: 1px solid #e94560; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #ff5a7a; border-color: #ff5a7a; }"
+            "QPushButton:pressed { background-color: #c73550; }"
+        );
+    }
+}
+
 void CaptureCard::applyStyle(bool hovered)
 {
     QString bg = hovered ? "#0f3460" : "#16213e";
