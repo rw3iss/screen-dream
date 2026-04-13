@@ -270,13 +270,16 @@ pub unsafe extern "C" fn sd_take_screenshot(
     // Use Spectacle for native-resolution screenshots on KDE.
     // Falls back to PipeWire-based capture on other compositors.
     let result = if let Some(ref kwin) = state.kwin_capture {
+        tracing::info!("sd_take_screenshot: using Spectacle path (KWin backend available)");
         kwin.capture_screenshot_spectacle(&domain_source)
             .and_then(|frame| {
+                tracing::info!("Spectacle captured frame {}x{}, saving to {}", frame.width, frame.height, path.display());
                 let fmt = infrastructure::capture::screenshot::ScreenshotFormat::from_extension(path)?;
                 infrastructure::capture::screenshot::save_frame_to_file(&frame, path, fmt)?;
                 Ok(path.to_path_buf())
             })
     } else {
+        tracing::info!("sd_take_screenshot: no KWin backend, using PipeWire fallback");
         infrastructure::capture::capture_screenshot(
             state.capture.as_ref(),
             &domain_source,
@@ -285,8 +288,12 @@ pub unsafe extern "C" fn sd_take_screenshot(
     };
 
     match result {
-        Ok(_) => true,
+        Ok(ref p) => {
+            tracing::info!("Screenshot saved successfully: {}", p.display());
+            true
+        }
         Err(e) => {
+            tracing::error!("Screenshot failed: {e}");
             if !error.is_null() {
                 unsafe { *error = SDError::from_app_error(e) };
             }

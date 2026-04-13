@@ -840,7 +840,7 @@ impl KwinCaptureBackend {
                 let phys_w = (mw as f64 * scale).round() as u32;
                 let phys_h = (mh as f64 * scale).round() as u32;
 
-                debug!("Monitor {} at logical ({mx},{my} {mw}x{mh}) -> physical ({phys_x},{phys_y} {phys_w}x{phys_h})", s.monitor_id);
+                info!("Screenshot: monitor {} logical ({mx},{my} {mw}x{mh}) * scale {scale} -> physical ({phys_x},{phys_y} {phys_w}x{phys_h})", s.monitor_id);
 
                 let frame = super::portal_screenshot::load_png_and_crop(
                     &path, phys_x, phys_y, phys_w, phys_h
