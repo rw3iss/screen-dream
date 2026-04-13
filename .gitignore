@@ -6,3 +6,6 @@ build/
 *.dll
 .DS_Store
 *.swp
+
+
+_*.md

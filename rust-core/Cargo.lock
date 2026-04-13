@@ -1419,6 +1419,7 @@ dependencies = [
  "futures-util",
  "hound",
  "image",
+ "libc",
  "nix 0.29.0",
  "pipewire",
  "serde",

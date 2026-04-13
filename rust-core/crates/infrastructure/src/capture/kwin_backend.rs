@@ -94,6 +94,9 @@ pub struct KwinCaptureBackend {
     pw_capture: Mutex<Option<super::pipewire_capture::PipeWireCapture>>,
     /// Spectacle D-Bus backend for native-resolution screenshot capture.
     spectacle: super::spectacle_backend::SpectacleCapture,
+    /// DRM framebuffer capture backend — instant native-resolution capture
+    /// without PipeWire or Spectacle. Requires CAP_SYS_ADMIN on the binary.
+    drm_backend: Option<super::drm_backend::DrmCaptureBackend>,
 }
 
 impl KwinCaptureBackend {
@@ -123,6 +126,18 @@ impl KwinCaptureBackend {
             }
         };
 
+        // Try to initialize DRM capture backend (requires CAP_SYS_ADMIN).
+        let drm_backend = match super::drm_backend::DrmCaptureBackend::new() {
+            Ok(drm) => {
+                info!("DRM capture backend initialized — will use for screenshots and recording");
+                Some(drm)
+            }
+            Err(e) => {
+                info!("DRM capture not available (falling back to PipeWire/Spectacle): {e}");
+                None
+            }
+        };
+
         Ok(KwinCaptureBackend {
             platform,
             runtime,
@@ -131,6 +146,7 @@ impl KwinCaptureBackend {
             geometry_map: Mutex::new(HashMap::new()),
             pw_capture: Mutex::new(pw_capture),
             spectacle,
+            drm_backend,
         })
     }
 
@@ -700,6 +716,48 @@ fn extract_u32(map: &HashMap<String, OwnedValue>, key: &str) -> AppResult<u32> {
     )))
 }
 
+/// Crop a CapturedFrame to a sub-region.
+fn crop_frame(
+    frame: &CapturedFrame,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> AppResult<CapturedFrame> {
+    // Clamp to frame bounds
+    let x = x.min(frame.width.saturating_sub(1));
+    let y = y.min(frame.height.saturating_sub(1));
+    let width = width.min(frame.width.saturating_sub(x));
+    let height = height.min(frame.height.saturating_sub(y));
+
+    if width == 0 || height == 0 {
+        return Err(AppError::Capture(
+            "DRM: crop region has zero width or height".to_string(),
+        ));
+    }
+
+    let src_stride = (frame.width as usize) * 4;
+    let dst_stride = (width as usize) * 4;
+    let mut data = Vec::with_capacity((width as usize) * (height as usize) * 4);
+
+    for row in 0..height {
+        let src_offset = ((y + row) as usize) * src_stride + (x as usize) * 4;
+        let src_end = src_offset + dst_stride;
+        if src_end <= frame.data.len() {
+            data.extend_from_slice(&frame.data[src_offset..src_end]);
+        } else {
+            // Pad with transparent black if we go out of bounds
+            data.extend(std::iter::repeat(0u8).take(dst_stride));
+        }
+    }
+
+    Ok(CapturedFrame {
+        data,
+        width,
+        height,
+    })
+}
+
 /// Convert ARGB8888/XRGB8888 pixel data to RGBA8888.
 ///
 /// KWin uses wl_shm format ARGB8888 (format=0) which on little-endian is
@@ -763,8 +821,17 @@ impl CaptureBackend for KwinCaptureBackend {
     }
 
     fn capture_frame(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
-        // capture_frame uses PipeWire for fast, lightweight preview/thumbnail capture.
-        // For final screenshots (saved to file), use capture_screenshot_spectacle() instead.
+        // Try DRM capture first — instant, native resolution, no portal dialogs.
+        if let Some(ref drm) = self.drm_backend {
+            match self.capture_frame_drm(drm, source) {
+                Ok(frame) => return Ok(frame),
+                Err(e) => {
+                    debug!("DRM capture_frame failed, falling back to PipeWire: {e}");
+                }
+            }
+        }
+
+        // Fallback: PipeWire for fast, lightweight preview/thumbnail capture.
         let pw_guard = self.ensure_pw_capture()?;
         let pw = pw_guard.as_ref().ok_or_else(|| {
             AppError::Capture("PipeWire capture not initialised".to_string())
@@ -807,11 +874,193 @@ impl CaptureBackend for KwinCaptureBackend {
 }
 
 impl KwinCaptureBackend {
-    /// Take a high-quality screenshot using Spectacle D-Bus (native 4K resolution).
+    // -----------------------------------------------------------------------
+    // DRM capture helpers
+    // -----------------------------------------------------------------------
+
+    /// Capture a frame via DRM, matching CaptureSource to the right CRTC.
+    fn capture_frame_drm(
+        &self,
+        drm: &super::drm_backend::DrmCaptureBackend,
+        source: &CaptureSource,
+    ) -> AppResult<CapturedFrame> {
+        match source {
+            CaptureSource::Screen(s) => {
+                // Find the monitor matching this screen ID, then match to a DRM CRTC.
+                let monitors = Monitor::all().map_err(|e| {
+                    AppError::Capture(format!("Failed to enumerate monitors: {e}"))
+                })?;
+
+                let monitor = monitors
+                    .iter()
+                    .find(|m| m.id().ok() == Some(s.monitor_id));
+
+                let frame = if let Some(mon) = monitor {
+                    let name = mon.name().unwrap_or_default();
+                    let idx = monitors
+                        .iter()
+                        .position(|m| m.id().ok() == Some(s.monitor_id))
+                        .unwrap_or(0);
+
+                    if let Some(cm) = drm.find_crtc_for_monitor(&name, idx) {
+                        debug!("DRM: capturing screen {} via CRTC {} ({})", s.monitor_id, cm.crtc_id, cm.connector_name);
+                        drm.capture_crtc(cm.crtc_id)?
+                    } else {
+                        // Fallback: capture the first CRTC
+                        let cms = drm.crtc_monitors();
+                        if cms.is_empty() {
+                            return Err(AppError::Capture("DRM: no active CRTCs".to_string()));
+                        }
+                        drm.capture_crtc(cms[0].crtc_id)?
+                    }
+                } else {
+                    // Monitor not found by ID, capture first CRTC
+                    let cms = drm.crtc_monitors();
+                    if cms.is_empty() {
+                        return Err(AppError::Capture("DRM: no active CRTCs".to_string()));
+                    }
+                    drm.capture_crtc(cms[0].crtc_id)?
+                };
+
+                Ok(frame)
+            }
+            CaptureSource::Window(w) => {
+                // For window capture: get full screen via DRM, then crop to window geometry.
+                let geom_map = self.geometry_map.lock().map_err(|e| {
+                    AppError::Capture(format!("Geometry map lock poisoned: {e}"))
+                })?;
+
+                let &(wx, wy, ww, wh) = geom_map.get(&w.window_id).ok_or_else(|| {
+                    AppError::Capture(format!(
+                        "Window ID {} not found. Refresh sources first.",
+                        w.window_id
+                    ))
+                })?;
+
+                if ww == 0 || wh == 0 {
+                    return Err(AppError::Capture(
+                        "Cannot capture this window — it may be minimized or hidden.".to_string(),
+                    ));
+                }
+
+                // Find which CRTC contains this window (by position).
+                let cms = drm.crtc_monitors();
+                let target_crtc = cms
+                    .iter()
+                    .find(|cm| {
+                        let cx = cm.crtc_x as i32;
+                        let cy = cm.crtc_y as i32;
+                        let cw = cm.width as i32;
+                        let ch = cm.height as i32;
+                        wx >= cx && wy >= cy && wx < cx + cw && wy < cy + ch
+                    })
+                    .or_else(|| cms.first());
+
+                let cm = target_crtc.ok_or_else(|| {
+                    AppError::Capture("DRM: no CRTCs available for window capture".to_string())
+                })?;
+
+                let frame = drm.capture_crtc(cm.crtc_id)?;
+
+                // Crop to window geometry (window coords are in logical space,
+                // DRM framebuffer is in physical/native pixels).
+                // Detect scale: DRM width / monitor logical width
+                let monitors = Monitor::all().unwrap_or_default();
+                let scale = monitors
+                    .iter()
+                    .find(|m| {
+                        let mx = m.x().unwrap_or(0) as u32;
+                        let my = m.y().unwrap_or(0) as u32;
+                        mx == cm.crtc_x && my == cm.crtc_y
+                    })
+                    .and_then(|m| {
+                        let lw = m.width().ok()? as f64;
+                        if lw > 0.0 {
+                            Some(cm.width as f64 / lw)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(1.0);
+
+                let crop_x = ((wx - cm.crtc_x as i32) as f64 * scale).round() as u32;
+                let crop_y = ((wy - cm.crtc_y as i32) as f64 * scale).round() as u32;
+                let crop_w = (ww as f64 * scale).round() as u32;
+                let crop_h = (wh as f64 * scale).round() as u32;
+
+                crop_frame(&frame, crop_x, crop_y, crop_w, crop_h)
+            }
+            CaptureSource::Region(r) => {
+                // Similar to window: capture full screen, crop to region.
+                let cms = drm.crtc_monitors();
+                let target_crtc = cms
+                    .iter()
+                    .find(|cm| {
+                        let cx = cm.crtc_x as i32;
+                        let cy = cm.crtc_y as i32;
+                        let cw = cm.width as i32;
+                        let ch = cm.height as i32;
+                        r.x >= cx && r.y >= cy && r.x < cx + cw && r.y < cy + ch
+                    })
+                    .or_else(|| cms.first());
+
+                let cm = target_crtc.ok_or_else(|| {
+                    AppError::Capture("DRM: no CRTCs available for region capture".to_string())
+                })?;
+
+                let frame = drm.capture_crtc(cm.crtc_id)?;
+
+                let monitors = Monitor::all().unwrap_or_default();
+                let scale = monitors
+                    .iter()
+                    .find(|m| {
+                        let mx = m.x().unwrap_or(0) as u32;
+                        let my = m.y().unwrap_or(0) as u32;
+                        mx == cm.crtc_x && my == cm.crtc_y
+                    })
+                    .and_then(|m| {
+                        let lw = m.width().ok()? as f64;
+                        if lw > 0.0 {
+                            Some(cm.width as f64 / lw)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(1.0);
+
+                let crop_x = ((r.x - cm.crtc_x as i32) as f64 * scale).round() as u32;
+                let crop_y = ((r.y - cm.crtc_y as i32) as f64 * scale).round() as u32;
+                let crop_w = (r.width as f64 * scale).round() as u32;
+                let crop_h = (r.height as f64 * scale).round() as u32;
+
+                crop_frame(&frame, crop_x, crop_y, crop_w, crop_h)
+            }
+        }
+    }
+
+    /// Take a high-quality screenshot using DRM or Spectacle (native 4K resolution).
     /// Use this for saving screenshots to file, NOT for previews/thumbnails.
-    /// Save a screenshot directly to a file, using Spectacle + FFmpeg crop.
+    /// Save a screenshot directly to a file, using DRM (preferred) or Spectacle + FFmpeg crop.
     /// Avoids loading the full image into memory — much faster for large screenshots.
     pub fn save_screenshot_spectacle(&self, source: &CaptureSource, output_path: &std::path::Path) -> AppResult<()> {
+        // Try DRM first — instant, no external dependencies.
+        if let Some(ref drm) = self.drm_backend {
+            match self.capture_frame_drm(drm, source) {
+                Ok(frame) => {
+                    info!("DRM screenshot: {}x{} -> {}", frame.width, frame.height, output_path.display());
+                    return super::screenshot::save_frame_to_file(
+                        &frame,
+                        output_path,
+                        super::screenshot::ScreenshotFormat::from_extension(output_path)?,
+                    );
+                }
+                Err(e) => {
+                    debug!("DRM screenshot failed, falling back to Spectacle: {e}");
+                }
+            }
+        }
+
+        // Fallback: original Spectacle + FFmpeg path.
         let ffmpeg_path = which::which("ffmpeg").map_err(|e| {
             AppError::FfmpegNotFound(format!("FFmpeg not found: {e}"))
         })?;
@@ -906,6 +1155,20 @@ impl KwinCaptureBackend {
     }
 
     pub fn capture_screenshot_spectacle(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
+        // Try DRM first — instant, native resolution.
+        if let Some(ref drm) = self.drm_backend {
+            match self.capture_frame_drm(drm, source) {
+                Ok(frame) => {
+                    info!("DRM screenshot capture: {}x{}", frame.width, frame.height);
+                    return Ok(frame);
+                }
+                Err(e) => {
+                    debug!("DRM capture_screenshot failed, falling back to Spectacle: {e}");
+                }
+            }
+        }
+
+        // Fallback: Spectacle + FFmpeg path.
         match source {
             CaptureSource::Screen(s) => {
                 // Capture all monitors via Spectacle, then use FFmpeg to crop
