@@ -809,18 +809,114 @@ impl CaptureBackend for KwinCaptureBackend {
 impl KwinCaptureBackend {
     /// Take a high-quality screenshot using Spectacle D-Bus (native 4K resolution).
     /// Use this for saving screenshots to file, NOT for previews/thumbnails.
+    /// Save a screenshot directly to a file, using Spectacle + FFmpeg crop.
+    /// Avoids loading the full image into memory — much faster for large screenshots.
+    pub fn save_screenshot_spectacle(&self, source: &CaptureSource, output_path: &std::path::Path) -> AppResult<()> {
+        let ffmpeg_path = which::which("ffmpeg").map_err(|e| {
+            AppError::FfmpegNotFound(format!("FFmpeg not found: {e}"))
+        })?;
+
+        // Ensure output directory exists
+        if let Some(parent) = output_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        match source {
+            CaptureSource::Screen(s) => {
+                let scale = self.detect_scale_factor();
+                let spectacle_path = self.spectacle.full_screen()?;
+
+                let monitors = Monitor::all().map_err(|e| {
+                    AppError::Capture(format!("Failed to enumerate monitors: {e}"))
+                })?;
+                let monitor = monitors.iter()
+                    .find(|m| m.id().unwrap_or(0) == s.monitor_id)
+                    .or_else(|| monitors.iter().find(|m| m.is_primary().unwrap_or(false)))
+                    .ok_or_else(|| AppError::Capture("No monitors found".to_string()))?;
+
+                let phys_x = (monitor.x().unwrap_or(0) as f64 * scale).round() as u32;
+                let phys_y = (monitor.y().unwrap_or(0) as f64 * scale).round() as u32;
+                let phys_w = (monitor.width().unwrap_or(0) as f64 * scale).round() as u32;
+                let phys_h = (monitor.height().unwrap_or(0) as f64 * scale).round() as u32;
+
+                let crop = format!("crop={phys_w}:{phys_h}:{phys_x}:{phys_y}");
+                info!("Screen screenshot: FFmpeg crop '{crop}' -> {}", output_path.display());
+
+                let status = std::process::Command::new(&ffmpeg_path)
+                    .args(["-y", "-i", spectacle_path.to_str().unwrap_or(""),
+                           "-vf", &crop, "-frames:v", "1", "-update", "1",
+                           output_path.to_str().unwrap_or("")])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map_err(|e| AppError::FfmpegExecution(format!("FFmpeg crop failed: {e}")))?;
+
+                let _ = std::fs::remove_file(&spectacle_path);
+                if !status.success() {
+                    return Err(AppError::FfmpegExecution("FFmpeg crop failed".to_string()));
+                }
+                Ok(())
+            }
+            CaptureSource::Window(w) => {
+                let uuid = if let Some(ref uuid) = w.uuid {
+                    uuid.clone()
+                } else {
+                    let map = self.uuid_map.lock().map_err(|e| {
+                        AppError::Capture(format!("UUID map lock poisoned: {e}"))
+                    })?;
+                    map.get(&w.window_id).cloned().ok_or_else(|| {
+                        AppError::Capture(format!("No UUID for window {}.", w.window_id))
+                    })?
+                };
+                // Spectacle ActiveWindow saves directly — just copy to output
+                let spectacle_path = self.spectacle.capture_window(&uuid)?;
+                std::fs::copy(&spectacle_path, output_path).map_err(|e| {
+                    AppError::Io(format!("Failed to copy screenshot: {e}"))
+                })?;
+                let _ = std::fs::remove_file(&spectacle_path);
+                Ok(())
+            }
+            CaptureSource::Region(r) => {
+                let scale = self.detect_scale_factor();
+                let spectacle_path = self.spectacle.full_screen()?;
+
+                let phys_x = (r.x as f64 * scale).round() as u32;
+                let phys_y = (r.y as f64 * scale).round() as u32;
+                let phys_w = (r.width as f64 * scale).round() as u32;
+                let phys_h = (r.height as f64 * scale).round() as u32;
+
+                let crop = format!("crop={phys_w}:{phys_h}:{phys_x}:{phys_y}");
+
+                let status = std::process::Command::new(&ffmpeg_path)
+                    .args(["-y", "-i", spectacle_path.to_str().unwrap_or(""),
+                           "-vf", &crop, "-frames:v", "1", "-update", "1",
+                           output_path.to_str().unwrap_or("")])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map_err(|e| AppError::FfmpegExecution(format!("FFmpeg crop failed: {e}")))?;
+
+                let _ = std::fs::remove_file(&spectacle_path);
+                if !status.success() {
+                    return Err(AppError::FfmpegExecution("FFmpeg region crop failed".to_string()));
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn capture_screenshot_spectacle(&self, source: &CaptureSource) -> AppResult<CapturedFrame> {
         match source {
             CaptureSource::Screen(s) => {
-                // Capture all monitors, then crop to the target monitor.
-                // CurrentScreen captures whichever screen the active window is on
-                // (which is Screen Dream itself), so we use FullScreen + crop instead.
+                // Capture all monitors via Spectacle, then use FFmpeg to crop
+                // to the target monitor. FFmpeg crops a 10K PNG in ~0.5s vs
+                // ~7s loading in Rust with the image crate.
                 let scale = self.detect_scale_factor();
-                debug!("Screenshot via Spectacle: full screen, crop to monitor {}", s.monitor_id);
+                debug!("Screenshot via Spectacle + FFmpeg crop: monitor {}", s.monitor_id);
 
-                let path = self.spectacle.full_screen()?;
+                let spectacle_path = self.spectacle.full_screen()?;
 
-                // Find the target monitor's position and size
+                // Find the target monitor
                 let monitors = Monitor::all().map_err(|e| {
                     AppError::Capture(format!("Failed to enumerate monitors: {e}"))
                 })?;
@@ -834,18 +930,46 @@ impl KwinCaptureBackend {
                 let mw = monitor.width().unwrap_or(0);
                 let mh = monitor.height().unwrap_or(0);
 
-                // Scale logical coordinates to physical
-                let phys_x = (mx as f64 * scale).round() as i32;
-                let phys_y = (my as f64 * scale).round() as i32;
+                let phys_x = (mx as f64 * scale).round() as u32;
+                let phys_y = (my as f64 * scale).round() as u32;
                 let phys_w = (mw as f64 * scale).round() as u32;
                 let phys_h = (mh as f64 * scale).round() as u32;
 
-                info!("Screenshot: monitor {} logical ({mx},{my} {mw}x{mh}) * scale {scale} -> physical ({phys_x},{phys_y} {phys_w}x{phys_h})", s.monitor_id);
+                info!("Monitor {} logical ({mx},{my} {mw}x{mh}) * {scale} -> physical ({phys_x},{phys_y} {phys_w}x{phys_h})", s.monitor_id);
 
-                let frame = super::portal_screenshot::load_png_and_crop(
-                    &path, phys_x, phys_y, phys_w, phys_h
-                )?;
-                let _ = std::fs::remove_file(&path);
+                // Use FFmpeg to crop — much faster than loading the full PNG in Rust
+                let cropped_path = spectacle_path.with_file_name("sd_screen_crop.png");
+                let crop_filter = format!("crop={phys_w}:{phys_h}:{phys_x}:{phys_y}");
+
+                let ffmpeg_path = self.runtime.block_on(async {
+                    // Quick FFmpeg resolve — we know it's available
+                    Ok::<_, AppError>(which::which("ffmpeg").map_err(|e| {
+                        AppError::FfmpegNotFound(format!("FFmpeg not found: {e}"))
+                    })?)
+                })?;
+
+                let status = std::process::Command::new(&ffmpeg_path)
+                    .args([
+                        "-y", "-i", spectacle_path.to_str().unwrap_or(""),
+                        "-vf", &crop_filter,
+                        "-frames:v", "1",
+                        "-update", "1",
+                        cropped_path.to_str().unwrap_or(""),
+                    ])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map_err(|e| AppError::FfmpegExecution(format!("FFmpeg crop failed: {e}")))?;
+
+                if !status.success() {
+                    let _ = std::fs::remove_file(&spectacle_path);
+                    return Err(AppError::FfmpegExecution("FFmpeg crop exited with error".to_string()));
+                }
+
+                // Load the cropped result
+                let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&cropped_path)?;
+                let _ = std::fs::remove_file(&spectacle_path);
+                let _ = std::fs::remove_file(&cropped_path);
                 Ok(frame)
             }
             CaptureSource::Window(w) => {
@@ -867,14 +991,42 @@ impl KwinCaptureBackend {
             }
             CaptureSource::Region(r) => {
                 let scale = self.detect_scale_factor();
-                debug!("Screenshot via Spectacle: region ({},{} {}x{}) scale={scale}", r.x, r.y, r.width, r.height);
-                let path = self.spectacle.full_screen()?;
-                let phys_x = (r.x as f64 * scale).round() as i32;
-                let phys_y = (r.y as f64 * scale).round() as i32;
+                debug!("Screenshot via Spectacle + FFmpeg crop: region ({},{} {}x{}) scale={scale}", r.x, r.y, r.width, r.height);
+                let spectacle_path = self.spectacle.full_screen()?;
+
+                let phys_x = (r.x as f64 * scale).round() as u32;
+                let phys_y = (r.y as f64 * scale).round() as u32;
                 let phys_w = (r.width as f64 * scale).round() as u32;
                 let phys_h = (r.height as f64 * scale).round() as u32;
-                let frame = super::portal_screenshot::load_png_and_crop(&path, phys_x, phys_y, phys_w, phys_h)?;
-                let _ = std::fs::remove_file(&path);
+
+                let cropped_path = spectacle_path.with_file_name("sd_region_crop.png");
+                let crop_filter = format!("crop={phys_w}:{phys_h}:{phys_x}:{phys_y}");
+
+                let ffmpeg_path = which::which("ffmpeg").map_err(|e| {
+                    AppError::FfmpegNotFound(format!("FFmpeg not found: {e}"))
+                })?;
+
+                let status = std::process::Command::new(&ffmpeg_path)
+                    .args([
+                        "-y", "-i", spectacle_path.to_str().unwrap_or(""),
+                        "-vf", &crop_filter,
+                        "-frames:v", "1",
+                        "-update", "1",
+                        cropped_path.to_str().unwrap_or(""),
+                    ])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map_err(|e| AppError::FfmpegExecution(format!("FFmpeg crop failed: {e}")))?;
+
+                if !status.success() {
+                    let _ = std::fs::remove_file(&spectacle_path);
+                    return Err(AppError::FfmpegExecution("FFmpeg region crop failed".to_string()));
+                }
+
+                let frame = super::spectacle_backend::SpectacleCapture::load_as_frame(&cropped_path)?;
+                let _ = std::fs::remove_file(&spectacle_path);
+                let _ = std::fs::remove_file(&cropped_path);
                 Ok(frame)
             }
         }
