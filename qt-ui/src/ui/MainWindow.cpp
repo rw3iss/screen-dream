@@ -67,21 +67,20 @@ void MainWindow::setupCentralWidget()
 {
     auto *central = new QWidget(this);
     auto *mainLayout = new QVBoxLayout(central);
-    mainLayout->setContentsMargins(16, 8, 16, 8);
-    mainLayout->setSpacing(8);
+    mainLayout->setContentsMargins(12, 6, 12, 6);
+    mainLayout->setSpacing(4);
 
-    // --- Capture cards row (fixed height, no stretch) ---
+    // --- Capture cards row (fixed height, stretch to fill width equally) ---
     auto *cardsLayout = new QHBoxLayout();
-    cardsLayout->setAlignment(Qt::AlignCenter);
-    cardsLayout->setSpacing(20);
+    cardsLayout->setSpacing(8);
 
     m_screenCard = new CaptureCard(CaptureCard::Screen, central);
     m_windowCard = new CaptureCard(CaptureCard::Window, central);
     m_areaCard   = new CaptureCard(CaptureCard::Area, central);
 
-    cardsLayout->addWidget(m_screenCard);
-    cardsLayout->addWidget(m_windowCard);
-    cardsLayout->addWidget(m_areaCard);
+    cardsLayout->addWidget(m_screenCard, 1);
+    cardsLayout->addWidget(m_windowCard, 1);
+    cardsLayout->addWidget(m_areaCard, 1);
 
     // Connect card buttons
     connect(m_screenCard, &CaptureCard::screenshotClicked, this, &MainWindow::onScreenScreenshot);
@@ -100,30 +99,8 @@ void MainWindow::setupCentralWidget()
     connect(m_sourceBrowser, &SourceBrowser::sourceSelected,
             this, &MainWindow::onSourceSelected);
 
-    // --- Separator with label ---
-    auto *sepLayout = new QHBoxLayout();
-    sepLayout->setSpacing(8);
-
-    auto *leftLine = new QFrame(central);
-    leftLine->setFrameShape(QFrame::HLine);
-    leftLine->setStyleSheet("color: #2a2a4a;");
-
-    auto *sepLabel = new QLabel("Recent Captures", central);
-    sepLabel->setStyleSheet("color: #a0a0a0; font-size: 13px; background-color: transparent;");
-
-    auto *rightLine = new QFrame(central);
-    rightLine->setFrameShape(QFrame::HLine);
-    rightLine->setStyleSheet("color: #2a2a4a;");
-
-    sepLayout->addWidget(leftLine, 1);
-    sepLayout->addWidget(sepLabel, 0);
-    sepLayout->addWidget(rightLine, 1);
-
-    mainLayout->addLayout(sepLayout, 0);  // no stretch
-
-    // --- Recent captures (fixed height band at bottom) ---
+    // --- Recent captures (collapsible footer) ---
     m_recentCaptures = new RecentCaptures(central);
-    m_recentCaptures->setFixedHeight(140);
     m_recentCaptures->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     mainLayout->addWidget(m_recentCaptures, 0);  // no stretch — stays at bottom
 

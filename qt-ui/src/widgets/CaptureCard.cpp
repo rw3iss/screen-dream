@@ -13,75 +13,93 @@ CaptureCard::CaptureCard(CaptureType type, QWidget *parent)
 
 void CaptureCard::setupUi()
 {
-    setFixedSize(200, 180);
+    setFixedHeight(60);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setAlignment(Qt::AlignCenter);
-    layout->setSpacing(6);
-    layout->setContentsMargins(12, 12, 12, 12);
+    auto *layout = new QHBoxLayout(this);
+    layout->setContentsMargins(10, 6, 10, 6);
+    layout->setSpacing(8);
 
-    // Icon
+    // Left side: icon + title + description
+    auto *infoLayout = new QVBoxLayout();
+    infoLayout->setContentsMargins(0, 0, 0, 0);
+    infoLayout->setSpacing(1);
+
+    // Title row with small inline icon
+    auto *titleRow = new QHBoxLayout();
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(4);
+
     m_iconLabel = new QLabel(this);
-    m_iconLabel->setAlignment(Qt::AlignCenter);
     QFont iconFont = m_iconLabel->font();
-    iconFont.setPointSize(28);
+    iconFont.setPointSize(11);
     m_iconLabel->setFont(iconFont);
 
-    // Title
     m_titleLabel = new QLabel(this);
-    m_titleLabel->setAlignment(Qt::AlignCenter);
     QFont titleFont = m_titleLabel->font();
-    titleFont.setPointSize(12);
+    titleFont.setPointSize(11);
     titleFont.setBold(true);
     m_titleLabel->setFont(titleFont);
+    m_titleLabel->setStyleSheet("color: #e0e0e0;");
+
+    titleRow->addWidget(m_iconLabel);
+    titleRow->addWidget(m_titleLabel);
+    titleRow->addStretch();
 
     // Description
     m_descLabel = new QLabel(this);
-    m_descLabel->setAlignment(Qt::AlignCenter);
-    m_descLabel->setStyleSheet("color: #a0a0a0; font-size: 12px;");
+    m_descLabel->setStyleSheet("color: #707090; font-size: 10px;");
 
     switch (m_type) {
     case Screen:
-        m_iconLabel->setText(QString::fromUtf8("\xF0\x9F\x96\xA5"));  // desktop monitor emoji
+        m_iconLabel->setText(QString::fromUtf8("\xF0\x9F\x96\xA5"));
         m_titleLabel->setText("SCREEN");
         m_descLabel->setText("Full screen capture");
         break;
     case Window:
-        m_iconLabel->setText(QString::fromUtf8("\xF0\x9F\xAA\x9F"));  // window emoji
+        m_iconLabel->setText(QString::fromUtf8("\xF0\x9F\xAA\x9F"));
         m_titleLabel->setText("WINDOW");
         m_descLabel->setText("Single window capture");
         break;
     case Area:
-        m_iconLabel->setText(QString::fromUtf8("\xE2\x9C\x82"));  // scissors emoji
+        m_iconLabel->setText(QString::fromUtf8("\xE2\x9C\x82"));
         m_titleLabel->setText("AREA");
         m_descLabel->setText("Select region to capture");
         break;
     }
 
-    layout->addWidget(m_iconLabel);
-    layout->addWidget(m_titleLabel);
-    layout->addWidget(m_descLabel);
+    infoLayout->addLayout(titleRow);
+    infoLayout->addWidget(m_descLabel);
 
-    // Buttons row
+    layout->addLayout(infoLayout, 1);
+
+    // Right side: buttons
     auto *btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(8);
+    btnLayout->setSpacing(4);
 
     m_screenshotBtn = new QPushButton("Screenshot", this);
     m_screenshotBtn->setToolTip("Take a screenshot");
     m_screenshotBtn->setCursor(Qt::PointingHandCursor);
+    m_screenshotBtn->setFixedHeight(26);
+    m_screenshotBtn->setStyleSheet(
+        "QPushButton { background-color: #1a1a3a; color: #c0c0c0; border: 1px solid #2a2a4a; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+        "QPushButton:hover { background-color: #2a2a5a; color: #ffffff; border-color: #3a3a6a; }"
+        "QPushButton:pressed { background-color: #0f0f2f; }"
+    );
 
     m_recordBtn = new QPushButton("Record", this);
     m_recordBtn->setToolTip("Start recording");
     m_recordBtn->setCursor(Qt::PointingHandCursor);
+    m_recordBtn->setFixedHeight(26);
     m_recordBtn->setStyleSheet(
-        "QPushButton { background-color: #e94560; color: #ffffff; border: 1px solid #e94560; border-radius: 6px; padding: 4px 10px; }"
+        "QPushButton { background-color: #e94560; color: #ffffff; border: 1px solid #e94560; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
         "QPushButton:hover { background-color: #ff5a7a; border-color: #ff5a7a; }"
         "QPushButton:pressed { background-color: #c73550; }"
     );
 
     btnLayout->addWidget(m_screenshotBtn);
     btnLayout->addWidget(m_recordBtn);
-    layout->addLayout(btnLayout);
+    layout->addLayout(btnLayout, 0);
 
     connect(m_screenshotBtn, &QPushButton::clicked, this, &CaptureCard::screenshotClicked);
     connect(m_recordBtn, &QPushButton::clicked, this, &CaptureCard::recordClicked);
@@ -94,7 +112,7 @@ void CaptureCard::applyStyle(bool hovered)
         "CaptureCard {"
         "  background-color: %1;"
         "  border: 1px solid #2a2a4a;"
-        "  border-radius: 10px;"
+        "  border-radius: 6px;"
         "}"
     ).arg(bg));
 }
