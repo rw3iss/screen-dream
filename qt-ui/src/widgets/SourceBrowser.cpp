@@ -189,8 +189,12 @@ void SourceBrowser::setupUi()
 
     m_contentWidget->setLayout(contentLayout);
     mainLayout->addWidget(m_contentWidget, 1);
-    // Start collapsed — Fixed height (just the toggle button)
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // This stretch is always visible and pushes everything above it to the top.
+    // When content is expanded, it takes stretch=1 and this stretch=1 shares space.
+    // When content is hidden, this stretch takes all remaining space, keeping
+    // the toggle button pinned to the top.
+    mainLayout->addStretch(1);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setLayout(mainLayout);
 }
 
@@ -201,11 +205,9 @@ void SourceBrowser::toggleExpanded()
 
     if (m_expanded) {
         m_toggleBtn->setText(QString::fromUtf8("\u25BC Browse Sources"));
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         refresh();
     } else {
         m_toggleBtn->setText(QString::fromUtf8("\u25B6 Browse Sources"));
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         stopThumbnailTimer();
     }
 }
