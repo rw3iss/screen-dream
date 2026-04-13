@@ -23,8 +23,8 @@ RegionPicker::RegionPicker(const QString &outputPath, QWidget *parent)
                  | Qt::WindowStaysOnTopHint
                  | Qt::X11BypassWindowManagerHint);
     setAttribute(Qt::WA_DeleteOnClose);
-    // NO translucent background — we paint our own solid semi-opaque fill
-    setAttribute(Qt::WA_TranslucentBackground, false);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
     setCursor(Qt::CrossCursor);
     setMouseTracking(true);
 
