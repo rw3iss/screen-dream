@@ -32,11 +32,9 @@ add_custom_command(
 )
 add_custom_target(rust_ffi ALL DEPENDS "${RUST_FFI_LIB}")
 
-# Imported shared library target for linking
-add_library(screen_dream_ffi SHARED IMPORTED)
-set_target_properties(screen_dream_ffi PROPERTIES
-    IMPORTED_LOCATION "${RUST_FFI_LIB}"
-)
+# Link against the Rust FFI library by name (not absolute path)
+# so that setcap CAP_SYS_ADMIN works (AT_SECURE blocks absolute paths)
+link_directories("${RUST_LIB_DIR}")
 
 # --- Qt application -------------------------------------------------------------
 
@@ -66,6 +64,12 @@ set(RESOURCES
 add_executable(ScreenDream ${SOURCES} ${HEADERS} ${RESOURCES})
 add_dependencies(ScreenDream rust_ffi)
 
+# Also link libdrm for DRM framebuffer capture
+find_library(DRM_LIB drm)
+if(DRM_LIB)
+    target_link_libraries(ScreenDream PRIVATE ${DRM_LIB})
+endif()
+
 target_include_directories(ScreenDream PRIVATE
     "${RUST_DIR}/crates/ffi"       # screen_dream_ffi.h
     "${CMAKE_SOURCE_DIR}/src"
@@ -75,7 +79,7 @@ target_link_libraries(ScreenDream PRIVATE
     Qt6::Widgets
     Qt6::Core
     Qt6::Gui
-    screen_dream_ffi
+    -lscreen_dream_ffi
 )
 
 # RPATH so the binary can find libscreen_dream_ffi.so at runtime
