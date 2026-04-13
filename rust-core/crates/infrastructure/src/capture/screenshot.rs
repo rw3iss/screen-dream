@@ -106,6 +106,17 @@ pub fn save_frame_to_file(
     path: &Path,
     format: ScreenshotFormat,
 ) -> AppResult<()> {
+    let expected = (frame.width as usize) * (frame.height as usize) * 4;
+    tracing::info!(
+        "save_frame_to_file: {}x{}, data={} bytes (expected={}), path={}",
+        frame.width, frame.height, frame.data.len(), expected, path.display()
+    );
+    if frame.data.len() != expected {
+        return Err(AppError::Capture(format!(
+            "Frame data size mismatch: got {} bytes, expected {} for {}x{} RGBA",
+            frame.data.len(), expected, frame.width, frame.height
+        )));
+    }
     let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.data.clone())
         .ok_or_else(|| {
             AppError::Capture("Failed to create image from captured frame data".to_string())
