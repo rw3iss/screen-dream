@@ -183,15 +183,25 @@ void RegionPicker::captureAndSave()
         return;
     }
 
-    // Scale selection coordinates: our overlay is in logical pixels,
+    // Compute scale by comparing the Spectacle image size with our overlay size.
+    // The overlay covers the virtual desktop in logical pixels.
     // Spectacle captures at physical (native) resolution.
-    QScreen *screen = QGuiApplication::primaryScreen();
-    qreal scale = screen ? screen->devicePixelRatio() : 1.0;
+    // scale = physical / logical
+    QRect overlayGeo = geometry(); // our overlay geometry = virtual desktop in logical px
+    qreal scaleX = (qreal)fullImg.width() / overlayGeo.width();
+    qreal scaleY = (qreal)fullImg.height() / overlayGeo.height();
 
-    int cx = qRound(m_selection.x() * scale);
-    int cy = qRound(m_selection.y() * scale);
-    int cw = qRound(m_selection.width() * scale);
-    int ch = qRound(m_selection.height() * scale);
+    qDebug() << "RegionPicker: overlay=" << overlayGeo.size()
+             << "image=" << fullImg.size()
+             << "scaleX=" << scaleX << "scaleY=" << scaleY
+             << "selection=" << m_selection;
+
+    // The selection coordinates are relative to the overlay widget (0,0 = top-left of virtual desktop).
+    // Scale them to physical pixel coordinates in the Spectacle image.
+    int cx = qRound(m_selection.x() * scaleX);
+    int cy = qRound(m_selection.y() * scaleY);
+    int cw = qRound(m_selection.width() * scaleX);
+    int ch = qRound(m_selection.height() * scaleY);
 
     // Clamp to image bounds
     cx = qMax(0, qMin(cx, fullImg.width() - 1));
