@@ -1,5 +1,6 @@
 pub mod audio_capture;
-pub mod drm_backend;
+#[allow(dead_code)]
+mod drm_backend; // kept for future AMD/Intel use, not re-exported
 pub mod kwin_backend;
 pub mod pipewire_capture;
 pub mod portal_recorder;
@@ -10,7 +11,6 @@ pub mod spectacle_backend;
 pub mod xcap_backend;
 
 pub use audio_capture::*;
-pub use drm_backend::*;
 pub use kwin_backend::*;
 pub use pipewire_capture::*;
 pub use portal_recorder::*;

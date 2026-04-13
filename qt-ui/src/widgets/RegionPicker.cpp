@@ -12,9 +12,7 @@
 #include <QUrl>
 #include <QTimer>
 #include <QEventLoop>
-#include <QDBusInterface>
-#include <QDBusReply>
-#include <QDBusConnection>
+#include <QProcess>
 #include <QDebug>
 
 RegionPicker::RegionPicker(const QString &outputPath, QWidget *parent)
@@ -154,75 +152,39 @@ void RegionPicker::captureAndSave()
     // Hide overlay so it doesn't appear in the screenshot
     hide();
     QCoreApplication::processEvents();
-    QThread::msleep(50); // Brief wait for compositor to remove our window
+    QThread::msleep(100); // Brief wait for compositor to remove our window
 
-    // Use the portal Screenshot API with interactive=false — fast, silent, native resolution.
-    // Call via QDBus directly — no Rust, no Spectacle, no helper.
-    QDBusInterface portal("org.freedesktop.portal.Desktop",
-                          "/org/freedesktop/portal/desktop",
-                          "org.freedesktop.portal.Screenshot",
-                          QDBusConnection::sessionBus());
-
-    QVariantMap options;
-    options["interactive"] = false;
-
-    QDBusReply<QDBusObjectPath> reply = portal.call("Screenshot", QString(), options);
-    if (!reply.isValid()) {
-        qWarning() << "Portal Screenshot call failed:" << reply.error().message();
+    // Use Spectacle CLI for a synchronous full-screen capture.
+    // -b = background (no GUI), -n = no notification, -f = full screen, -o = output path
+    QString tempPath = QStringLiteral("/tmp/sd_region_bg.png");
+    QProcess proc;
+    proc.start(QStringLiteral("spectacle"), {"-b", "-n", "-f", "-o", tempPath});
+    if (!proc.waitForFinished(5000)) {
+        qWarning() << "Spectacle timed out";
         emit cancelled();
         close();
         return;
     }
 
-    QString requestPath = reply.value().path();
-
-    // Wait for the Response signal by polling the portal's screenshot output.
-    // The portal saves to ~/Pictures/Screenshots/ — find the newest file.
-    QDir screenshotDir(QDir::homePath() + "/Pictures/Screenshots");
-    QStringList beforeFiles = screenshotDir.entryList({"Screenshot_*.png"}, QDir::Files, QDir::Time);
-    QString beforeLatest = beforeFiles.isEmpty() ? QString() : beforeFiles.first();
-
-    // Give the portal time to process
-    bool success = false;
-    QString capturedUri;
-    for (int i = 0; i < 50; i++) { // up to 5 seconds
-        QThread::msleep(100);
-        QCoreApplication::processEvents();
-        QStringList afterFiles = screenshotDir.entryList({"Screenshot_*.png"}, QDir::Files, QDir::Time);
-        if (!afterFiles.isEmpty() && afterFiles.first() != beforeLatest) {
-            capturedUri = screenshotDir.absoluteFilePath(afterFiles.first());
-            success = true;
-            break;
-        }
-    }
-
-    if (!success || capturedUri.isEmpty()) {
-        qWarning() << "Portal screenshot failed or timed out";
+    if (proc.exitCode() != 0) {
+        qWarning() << "Spectacle failed:" << proc.readAllStandardError();
         emit cancelled();
         close();
         return;
     }
 
-    QString fullPath = capturedUri;
-    if (!QFile::exists(fullPath)) {
-        qWarning() << "Portal screenshot file not found:" << fullPath;
-        emit cancelled();
-        close();
-        return;
-    }
-
-    // Load the image with Qt (fast — QImage loads PNGs quickly)
-    QImage fullImg(fullPath);
+    // Load the full-screen image
+    QImage fullImg(tempPath);
     if (fullImg.isNull()) {
-        qWarning() << "Failed to load screenshot:" << fullPath;
-        QFile::remove(fullPath);
+        qWarning() << "Failed to load Spectacle screenshot:" << tempPath;
+        QFile::remove(tempPath);
         emit cancelled();
         close();
         return;
     }
 
     // Scale selection coordinates: our overlay is in logical pixels,
-    // the portal screenshot is in physical pixels.
+    // Spectacle captures at physical (native) resolution.
     QScreen *screen = QGuiApplication::primaryScreen();
     qreal scale = screen ? screen->devicePixelRatio() : 1.0;
 
@@ -237,15 +199,15 @@ void RegionPicker::captureAndSave()
     cw = qMin(cw, fullImg.width() - cx);
     ch = qMin(ch, fullImg.height() - cy);
 
-    // Crop with QImage (instant — no FFmpeg needed)
+    // Crop with QImage (instant)
     QImage cropped = fullImg.copy(cx, cy, cw, ch);
 
     // Save directly
     QDir().mkpath(QFileInfo(m_outputPath).absolutePath());
     bool saved = cropped.save(m_outputPath, "PNG");
 
-    // Cleanup the portal's temp file
-    QFile::remove(fullPath);
+    // Cleanup temp file
+    QFile::remove(tempPath);
 
     if (saved) {
         qDebug() << "Region screenshot saved:" << cropped.size() << "->" << m_outputPath;

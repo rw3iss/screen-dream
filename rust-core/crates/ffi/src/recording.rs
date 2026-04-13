@@ -10,7 +10,6 @@ use domain::capture::RecordingConfig;
 use domain::error::AppError;
 
 use infrastructure::capture::{AudioCapture, PortalRecorder, RecordingPipeline};
-use infrastructure::capture::portal_recorder::is_portal_available_sync;
 
 use crate::core;
 use crate::types::{

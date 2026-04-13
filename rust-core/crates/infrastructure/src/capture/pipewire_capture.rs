@@ -30,6 +30,7 @@ struct PwFrame {
 }
 
 /// Negotiated stream parameters.
+#[allow(dead_code)]
 struct StreamInfo {
     width: u32,
     height: u32,
@@ -62,6 +63,7 @@ pub struct PipeWireCapture {
     /// Latest frame received from PipeWire (shared with PW thread).
     latest_frame: Arc<Mutex<Option<PwFrame>>>,
     /// Stream info (width, height) after negotiation.
+    #[allow(dead_code)]
     stream_info: Arc<Mutex<Option<StreamInfo>>>,
     /// PipeWire thread handle.
     pw_thread: Option<JoinHandle<()>>,
