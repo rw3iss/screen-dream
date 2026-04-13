@@ -2,6 +2,7 @@
 #define REGIONPICKER_H
 
 #include <QWidget>
+#include <QPixmap>
 #include <QRect>
 #include <QPoint>
 #include <QString>
@@ -10,14 +11,15 @@ class RegionPicker : public QWidget {
     Q_OBJECT
 
 public:
-    /// Show a fullscreen semi-transparent overlay for region selection.
-    /// outputPath: where to save the cropped screenshot on Enter.
-    explicit RegionPicker(const QString &outputPath, QWidget *parent = nullptr);
+    /// Show a fullscreen overlay for region selection.
+    /// backgroundImage: pre-captured screenshot used as frozen background.
+    /// outputPath: where to save the cropped result on Enter.
+    explicit RegionPicker(const QPixmap &backgroundImage,
+                          const QString &outputPath,
+                          QWidget *parent = nullptr);
 
 signals:
-    /// Emitted after the user confirms and the screenshot is saved.
     void regionCaptured(const QString &savedPath);
-    /// Emitted if the user presses Escape.
     void cancelled();
 
 protected:
@@ -28,9 +30,11 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    void captureAndSave();
+    void cropAndSave();
 
+    QPixmap m_background;
     QString m_outputPath;
+    qreal m_scale = 1.0;   // physical / logical scale
     bool m_selecting = false;
     bool m_hasSelection = false;
     QPoint m_startPos;

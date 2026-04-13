@@ -18,6 +18,9 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QUrl>
+#include <QProcess>
+#include <QThread>
+#include <QPixmap>
 #include <QApplication>
 #include <QClipboard>
 #include <QJsonObject>
@@ -291,19 +294,75 @@ void MainWindow::onWindowScreenshot()
 
 void MainWindow::onAreaScreenshot()
 {
-    // Show the region picker overlay — simple semi-opaque fill, no pre-capture
-    hide();
+    // Step 1: Pre-capture the full desktop via Spectacle D-Bus (fires async)
+    //         while we set up the overlay.
+    statusBar()->showMessage("Capturing desktop...", 2000);
 
-    QString outPath = screenshotOutputPath();
-    auto *picker = new RegionPicker(outPath);
+    // Use Spectacle CLI to capture synchronously (D-Bus is async and harder to wait for)
+    QString tempPath = QDir::tempPath() + "/sd_precapture.png";
+    QFile::remove(tempPath);
 
-    connect(picker, &RegionPicker::regionCaptured, this, [this](const QString &path) {
+    hide(); // hide our window so it's not in the screenshot
+    QCoreApplication::processEvents();
+    QThread::msleep(50);
+
+    QProcess spectacle;
+    spectacle.start("spectacle", {"-b", "-n", "-f", "-o", tempPath});
+    spectacle.waitForFinished(5000);
+
+    if (!QFile::exists(tempPath) || QFileInfo(tempPath).size() == 0) {
         show();
-        statusBar()->showMessage("Screenshot saved: " + path, 5000);
-        m_recentCaptures->refresh();
+        statusBar()->showMessage("Failed to capture desktop", 3000);
+        return;
+    }
+
+    // Step 2: Load the pre-captured image
+    QPixmap bg(tempPath);
+    if (bg.isNull()) {
+        show();
+        QFile::remove(tempPath);
+        statusBar()->showMessage("Failed to load desktop capture", 3000);
+        return;
+    }
+
+    // Step 3: Show the overlay with the frozen desktop as background
+    QString outPath = screenshotOutputPath();
+    auto *picker = new RegionPicker(bg, outPath);
+
+    // Step 4: On Enter — picker emits physical crop coordinates as "x,y,w,h"
+    connect(picker, &RegionPicker::regionCaptured, this,
+            [this, tempPath, outPath](const QString &coordStr) {
+        // Parse "x,y,w,h"
+        QStringList parts = coordStr.split(',');
+        if (parts.size() != 4) {
+            show();
+            QFile::remove(tempPath);
+            statusBar()->showMessage("Invalid crop coordinates", 3000);
+            return;
+        }
+
+        // Crop with FFmpeg (fast — ~0.4s)
+        QString cropFilter = QString("crop=%1:%2:%3:%4")
+            .arg(parts[2]).arg(parts[3]).arg(parts[0]).arg(parts[1]);
+
+        QProcess ffmpeg;
+        ffmpeg.start("ffmpeg", {"-y", "-i", tempPath, "-vf", cropFilter,
+                                "-frames:v", "1", "-update", "1", outPath});
+        ffmpeg.waitForFinished(10000);
+
+        QFile::remove(tempPath);
+        show();
+
+        if (ffmpeg.exitCode() == 0 && QFile::exists(outPath)) {
+            statusBar()->showMessage("Screenshot saved: " + outPath, 5000);
+            m_recentCaptures->refresh();
+        } else {
+            statusBar()->showMessage("Crop failed", 3000);
+        }
     });
 
-    connect(picker, &RegionPicker::cancelled, this, [this]() {
+    connect(picker, &RegionPicker::cancelled, this, [this, tempPath]() {
+        QFile::remove(tempPath);
         show();
     });
 }
